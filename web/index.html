@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>laya × Super Mario Bros. — 看着决策神经开车</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2230;
+    --border: #2b3444;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;   /* laya decisions */
+    --reflex: #d29922;   /* fallback rules */
+    --good: #3fb950;
+    --bad: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 14px 22px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    background: linear-gradient(180deg, #11161f, #0d1117);
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  header h1 b { color: var(--accent); }
+  header .meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  header .spacer { flex: 1; }
+
+  .wrap { display: grid; grid-template-columns: minmax(300px, 820px) minmax(340px, 1fr); gap: 18px; padding: 18px 22px; align-items: start; }
+  @media (max-width: 1100px) { .wrap { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card > h2 {
+    margin: 0; padding: 9px 14px; font-size: 12px; font-weight: 600;
+    letter-spacing: .8px; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .card > .body { padding: 14px; }
+
+  /* ---- screen ---- */
+  .screenbox { background: #000; display: flex; justify-content: center; padding: 12px; }
+  #screen {
+    width: 768px; max-width: 100%; height: auto; image-rendering: pixelated;
+    image-rendering: crisp-edges; border: 2px solid #000; border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--border), 0 8px 30px rgba(0,0,0,.5);
+    display: block;
+  }
+  .lamps { display: flex; gap: 8px; justify-content: center; padding: 10px; flex-wrap: wrap; }
+  .lamp {
+    font: 600 11px/1 var(--mono); padding: 6px 9px; border-radius: 5px;
+    border: 1px solid var(--border); background: #0f141c; color: #4d5566; user-select: none;
+  }
+  .lamp.on { background: var(--accent); border-color: var(--accent); color: #06101c; }
+  .lamp.on.b { background: var(--good); border-color: var(--good); }
+  .lamp.on.start { background: var(--reflex); border-color: var(--reflex); }
+
+  .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px,1fr)); gap: 8px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; }
+  .stat .k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .stat .v { font: 600 15px var(--mono); margin-top: 2px; }
+  .stat .v small { font-size: 10px; color: var(--muted); font-weight: 400; }
+
+  /* ---- controls ---- */
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, select {
+    font: 500 12px/1 inherit; padding: 7px 11px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101c; }
+  label.slider { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  input[type=range] { accent-color: var(--accent); width: 120px; }
+
+  /* ---- observation ---- */
+  .scene {
+    font: 13px/1.65 var(--mono); background: #0b0f16; border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 6px; padding: 11px 12px; color: #c9d6e4;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font: 500 11px var(--mono); padding: 3px 8px; border-radius: 20px;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.warn { border-color: var(--reflex); color: var(--reflex); }
+  .chip.danger { border-color: var(--bad); color: var(--bad); }
+
+  /* ---- decisions ---- */
+  .q { margin-bottom: 14px; }
+  .q:last-child { margin-bottom: 0; }
+  .qhead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .qname { font: 600 12px var(--mono); color: var(--text); }
+  .qname .type { font-size: 10px; padding: 1px 6px; border-radius: 4px; margin-left: 6px;
+                 border: 1px solid var(--border); color: var(--muted); font-weight: 400; }
+  .qval { font: 600 12px var(--mono); color: var(--accent); }
+  .bar { height: 16px; background: #0b0f16; border: 1px solid var(--border); border-radius: 4px;
+         position: relative; overflow: hidden; margin-bottom: 4px; }
+  .bar > span { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #1f6feb, var(--accent)); }
+  .bar.win > span { background: linear-gradient(90deg, #2ea043, var(--good)); }
+  .barrow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .barrow .lbl { width: 74px; font: 500 11px var(--mono); color: var(--muted); flex: none; }
+  .barrow .bar { flex: 1; margin: 0; }
+  .barrow .pct { width: 46px; text-align: right; font: 500 11px var(--mono); color: var(--text); }
+  .note { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .src {
+    display: inline-block; font: 600 10px var(--mono); padding: 2px 7px; border-radius: 4px;
+    letter-spacing: .5px; text-transform: uppercase;
+  }
+  .src.laya { background: rgba(88,166,255,.15); color: var(--accent); border: 1px solid var(--accent); }
+  .src.reflex { background: rgba(210,153,34,.15); color: var(--reflex); border: 1px solid var(--reflex); }
+
+  table { width: 100%; border-collapse: collapse; font: 11px var(--mono); }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 5px 7px;
+       border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  td { padding: 4px 7px; border-bottom: 1px solid #1b2130; color: #c9d6e4; }
+  tr:hover td { background: #171d28; }
+  td.laya { color: var(--accent); }
+  td.reflex { color: var(--reflex); }
+  .scroll { max-height: 300px; overflow: auto; }
+
+  .banner { padding: 9px 13px; border-radius: 7px; font-size: 12px; margin-bottom: 12px; }
+  .banner.err { background: rgba(248,81,73,.1); border: 1px solid var(--bad); color: #ffb4ae; }
+  .banner.warn { background: rgba(210,153,34,.1); border: 1px solid var(--reflex); color: #e3b341; }
+  .banner code { font-family: var(--mono); background: rgba(0,0,0,.3); padding: 1px 5px; border-radius: 3px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><b>laya</b> × Super Mario Bros.</h1>
+  <span class="meta" id="hdr">connecting…</span>
+  <span class="spacer"></span>
+  <span class="meta">决策神经 = laya Router · 环境 = nes_py (mapper 0)</span>
+</header>
+
+<div class="wrap">
+  <!-- ============ 左：画面 + 控制 ============ -->
+  <div style="display:flex; flex-direction:column; gap:18px;">
+    <div class="card">
+      <h2>模拟器画面 <span style="text-transform:none;letter-spacing:0">· 256×240 原始帧</span></h2>
+      <div class="screenbox"><canvas id="screen" width="256" height="240"></canvas></div>
+      <div class="lamps">
+        <span class="lamp" data-btn="left">← LEFT</span>
+        <span class="lamp" data-btn="right">RIGHT →</span>
+        <span class="lamp" data-btn="A">A</span>
+        <span class="lamp b" data-btn="B">B</span>
+        <span class="lamp start" data-btn="start">START</span>
+      </div>
+      <div class="body">
+        <div class="statgrid" id="stats"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>控制</h2>
+      <div class="body" style="display:flex; flex-direction:column; gap:11px;">
+        <div class="controls">
+          <button class="primary" id="btn-toggle">暂停</button>
+          <button id="btn-reset">重置</button>
+          <select id="sel-policy" title="谁在控制手柄">
+            <option value="hybrid">hybrid（低置信度时交给规则层）</option>
+            <option value="laya">laya（只用模型）</option>
+            <option value="reflex">reflex（只用规则，用于对照）</option>
+          </select>
+          <button id="btn-warmup">预热 checkpoint</button>
+        </div>
+        <div class="controls">
+          <label class="slider">置信度下限
+            <input type="range" id="rng-floor" min="0" max="0.95" step="0.05" value="0.45">
+            <b id="lbl-floor" style="font-family:var(--mono);color:var(--text)">0.45</b>
+          </label>
+          <label class="slider">模拟速度
+            <input type="range" id="rng-speed" min="0.25" max="4" step="0.25" value="1">
+            <b id="lbl-speed" style="font-family:var(--mono);color:var(--text)">1.0×</b>
+          </label>
+        </div>
+        <div class="controls">
+          <span class="note">手动接管：方向键 / Z=B / X=A / Enter=START（按住即生效，松开交回）</span>
+          <button id="btn-release">交还给 laya</button>
+        </div>
+        <div id="banner"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>决策流水 <span style="text-transform:none;letter-spacing:0">· logs/decisions.jsonl</span></h2>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>frame</th><th>来源</th><th>move</th><th>jump</th><th>risk</th><th>conf</th><th>ms</th>
+          </tr></thead>
+          <tbody id="trace"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 右：laya 的视角 ============ -->
+  <div style="display:flex; flex-direction:column; gap:18px;">
+    <div class="card">
+      <h2>喂给 laya 的观测 <span style="text-transform:none;letter-spacing:0">· state</span></h2>
+      <div class="body">
+        <div class="scene" id="scene">—</div>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>laya 的决策 <span id="src-badge" class="src laya" style="float:right;margin-top:-3px">—</span></h2>
+      <div class="body" id="decision">
+        <div class="note">等待第一次决策…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>问法 <span style="text-transform:none;letter-spacing:0">· src/brain.py QUESTIONS</span></h2>
+      <div class="body" id="questions"><div class="note">…</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const W = 256, H = 240;
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const image = ctx.createImageData(W, H);
+const rgba32 = new Uint32Array(image.data.buffer);
+let dirty = false, fetching = false, running = true, manual = [];
+
+// nes_py hands us 24-bit RGB (3 bytes/pixel) but ImageData is 32-bit RGBA
+// (4 bytes/pixel). Writing the RGB stream straight into image.data shifts every
+// pixel by one byte and shears the picture into diagonal colour fringes — the HUD
+// text, blocks and ground all stay recognisably in place, which is what makes it
+// look like an emulator fault rather than a canvas one. So expand, never memcpy.
+const LITTLE_ENDIAN = (() => {
+  const probe = new ArrayBuffer(4);
+  new Uint32Array(probe)[0] = 0x01020304;
+  return new Uint8Array(probe)[0] === 0x04;
+})();
+
+function blit(rgb) {
+  const n = rgb.length / 3;
+  if (LITTLE_ENDIAN) {
+    // A little-endian uint32 stores its low byte first, and ImageData wants the bytes
+    // in memory as R,G,B,A. So R goes in bits 0-7, B in bits 16-23 -- putting R in the
+    // high byte instead yields B,G,R,A and swaps red and blue.
+    for (let i = 0, p = 0; i < n; i++, p += 3) {
+      rgba32[i] = 0xff000000 | (rgb[p + 2] << 16) | (rgb[p + 1] << 8) | rgb[p];
+    }
+  } else {
+    const d = image.data;
+    for (let i = 0, p = 0, q = 0; i < n; i++, p += 3, q += 4) {
+      d[q] = rgb[p]; d[q + 1] = rgb[p + 1]; d[q + 2] = rgb[p + 2]; d[q + 3] = 255;
+    }
+  }
+}
+
+// ---------- 画面 ----------
+async function pump() {
+  if (fetching) return;
+  fetching = true;
+  try {
+    const res = await fetch('/api/frame.raw', { cache: 'no-store' });
+    if (res.ok) {
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength === W * H * 3) { blit(new Uint8Array(buf)); dirty = true; }
+    }
+  } catch (e) { /* 后端还没起来 */ }
+  fetching = false;
+}
+setInterval(pump, 20);
+
+let snap = null;
+function paint() {
+  if (dirty) {
+    ctx.putImageData(image, 0, 0);
+    // 叠加层：把"感知"画出来，方便核对 RAM/像素解析对不对
+    const st = snap && snap.state;
+    if (st && st.mario_screen_x != null) {
+      ctx.fillStyle = 'rgba(255,235,59,.85)';
+      ctx.fillRect(Math.round(st.mario_screen_x), 0, 1, H);
+    }
+    if (st && st.pit_ahead && st.pit_distance != null && st.mario_screen_x != null) {
+      const x0 = st.mario_screen_x + 8;
+      ctx.fillStyle = 'rgba(248,81,73,.35)';
+      ctx.fillRect(x0, 32, Math.max(2, st.pit_distance), H - 32);
+    }
+    dirty = false;
+  }
+  requestAnimationFrame(paint);
+}
+requestAnimationFrame(paint);
+
+// ---------- 状态轮询 ----------
+async function poll() {
+  try {
+    const res = await fetch('/api/snapshot', { cache: 'no-store' });
+    if (res.status === 503) { showBanner('err', '后端没有在跑。启动：<code>.venv\\Scripts\\python run.py --rom roms\\smb1.nes</code>'); return; }
+    snap = await res.json();
+    render(snap);
+  } catch (e) { /* ignore */ }
+  setTimeout(poll, 220);
+}
+
+let lastTraceFrame = -1;
+async function pollTrace() {
+  try {
+    const res = await fetch('/api/trace?limit=40', { cache: 'no-store' });
+    const rows = await res.json();
+    if (!rows.length) return;
+    renderTrace(rows);
+  } catch (e) {}
+  setTimeout(pollTrace, 700);
+}
+
+function showBanner(kind, html) {
+  const el = document.getElementById('banner');
+  if (!el.dataset.msg || el.dataset.msg !== html) {
+    el.className = 'banner ' + kind;
+    el.innerHTML = html;
+    el.dataset.msg = html;
+  }
+}
+
+// ---------- 渲染 ----------
+function render(s) {
+  const st = s.state || {}, stats = s.stats || {};
+  document.getElementById('hdr').textContent =
+    `${stats.rom || ''} · policy=${stats.policy} · model=${stats.model}`;
+
+  document.getElementById('stats').innerHTML = [
+    ['FPS 帧', (stats.frames || 0).toLocaleString()],
+    ['关卡位置', st.world_x != null ? st.world_x : '—'],
+    ['金币', st.coins ?? '—'],
+    ['时间', st.timer ?? '—'],
+    ['生命', st.lives ?? '—'],
+    ['状态', st.status || '—'],
+    ['决策数', stats.decisions ?? 0],
+    ['laya/规则', `${stats.laya_decisions ?? 0}/${stats.reflex_decisions ?? 0}`],
+    ['实测决策率', (stats.decision_hz_actual ?? 0).toFixed(1), 'Hz'],
+    ['低置信度', stats.low_confidence ?? 0],
+  ].map(([k, v, u]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}${u ? ' <small>'+u+'</small>' : ''}</div></div>`).join('');
+
+  // 按钮灯
+  const active = new Set(manual.length ? manual : (s.buttons || []));
+  document.querySelectorAll('.lamp').forEach(el =>
+    el.classList.toggle('on', active.has(el.dataset.btn)));
+
+  // 观测。chips 用的是 s.state（SmbState 原始解码），不是 observation：
+  // observation 是喂给模型的那段精简文本，故意很短，不足以撑起 UI。
+  const obs = s.observation;
+  document.getElementById('scene').textContent = obs ? obs.scene : '—';
+  {
+    const chips = [];
+    if (st.ram_plausible === false) {
+      chips.push('<span class="chip danger">RAM 映射不匹配此 ROM</span>');
+      chips.push('<span class="chip warn">金币/时间/生命 不可用</span>');
+      chips.push('<span class="chip warn">敌人位置 未知</span>');
+    } else {
+      chips.push(`<span class="chip">金币 <b>${st.coins}</b></span>`);
+      chips.push(`<span class="chip">时间 <b>${st.timer}</b></span>`);
+      chips.push(`<span class="chip">生命 <b>${st.lives}</b></span>`);
+      chips.push(`<span class="chip">关卡位置 <b>${st.world_x}</b></span>`);
+      chips.push(`<span class="chip">${st.on_ground === null || st.on_ground === undefined ? '着地 未知' : (st.on_ground ? '着地' : '腾空')}</span>`);
+    }
+    chips.push(st.pit_ahead
+      ? `<span class="chip danger">前方塌方 <b>${st.pit_distance}px</b></span>`
+      : '<span class="chip">前方地面 实体</span>');
+    chips.push(`<span class="chip">屏幕 x <b>${st.mario_screen_x ?? '—'}</b></span>`);
+    document.getElementById('chips').innerHTML = chips.join('');
+  }
+}
+
+// 从 trace 里取最新一条作为决策面板
+function renderTrace(rows) {
+  const body = document.getElementById('trace');
+  body.innerHTML = rows.slice().reverse().map(r => {
+    const d = r.decision || {}, src = r.source || 'reflex';
+    const jump = d.jump || {}, risk = d.risk || {}, move = d.move || {};
+    const jp = (jump.p_true ?? 0).toFixed(2);
+    return `<tr>
+      <td>${r.frame}</td>
+      <td class="${src}">${src}</td>
+      <td>${move.label ?? '—'}</td>
+      <td>${jp}${jump.thresholded ? ' ▲' : ''}</td>
+      <td>${risk.label ?? '—'}</td>
+      <td>${(d.confidence ?? 0).toFixed(2)}</td>
+      <td>${(d.latency_ms ?? 0).toFixed(0)}</td>
+    </tr>`;
+  }).join('');
+
+  const last = rows[rows.length - 1];
+  if (last && last.frame !== lastTraceFrame) {
+    lastTraceFrame = last.frame;
+    renderDecision(last);
+  }
+}
+
+function bar(label, pct, win) {
+  return `<div class="barrow"><div class="lbl">${label}</div>
+    <div class="bar ${win ? 'win' : ''}"><span style="width:${(pct * 100).toFixed(1)}%"></span></div>
+    <div class="pct">${(pct * 100).toFixed(0)}%</div></div>`;
+}
+
+function renderDecision(rec) {
+  const d = rec.decision || {};
+  const badge = document.getElementById('src-badge');
+  badge.textContent = rec.source;
+  badge.className = 'src ' + rec.source;
+
+  const move = d.move || {}, jump = d.jump || {}, risk = d.risk || {};
+  const probs = move.probs || {};
+  const labels = Object.keys(probs);
+  const moveRows = labels.length
+    ? labels.map(l => bar(l, probs[l], l === move.label)).join('')
+    : bar(move.label || '—', 1, true);
+
+  const riskProbs = risk.probs || {};
+  const riskRows = Object.keys(riskProbs).length
+    ? Object.keys(riskProbs).sort().map(k => bar(risk.legend?.[k] || `L${k}`, riskProbs[k], String(risk.index) === k)).join('')
+    : bar(risk.label || '—', 1, true);
+
+  const jp = jump.p_true ?? 0;
+  const deferred = d.deferred_reason
+    ? `<div class="banner warn">低置信度 → 交给规则层：${d.deferred_reason}</div>` : '';
+  const err = d.error ? `<div class="banner err">模型报错：${d.error}</div>` : '';
+  const trunc = d.usage && d.usage.truncated
+    ? `<div class="banner warn">state 被截断，受影响：${(d.usage.truncated_questions||[]).join(', ')}</div>` : '';
+
+  document.getElementById('decision').innerHTML = `
+    ${err}${deferred}${trunc}
+    <div class="q">
+      <div class="qhead"><span class="qname">move <span class="type">choice</span></span>
+        <span class="qval">→ ${move.label ?? '—'}</span></div>
+      ${moveRows}
+      <div class="note">映射到手柄：${JSON.stringify((move.buttons||[]))}</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qname">jump <span class="type">noul</span></span>
+        <span class="qval">P(true) = ${jp.toFixed(3)} ${jump.thresholded ? '→ 按 A' : '→ 不跳'}</span></div>
+      <div class="bar ${jump.thresholded ? 'win' : ''}"><span style="width:${(jp*100).toFixed(1)}%"></span></div>
+      <div class="note">阈值 0.5 自己定：noul 返回的是校准过的 P(true)，不是标签</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qname">risk <span class="type">score</span></span>
+        <span class="qval">→ ${risk.label ?? '—'}（期望 ${(risk.expected ?? 0).toFixed(2)}）</span></div>
+      ${riskRows}
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qname">answer_confidence</span>
+        <span class="qval">${(d.confidence ?? 0).toFixed(3)}</span></div>
+      <div class="note">路由 checkpoint：${d.model ?? '—'} · 延迟 ${(d.latency_ms ?? 0).toFixed(0)} ms · input_tokens ${d.usage?.input_tokens ?? '—'}</div>
+    </div>`;
+}
+
+// ---------- 问法面板 ----------
+fetch('/api/questions').then(r => r.json()).then(q => {
+  document.getElementById('questions').innerHTML = Object.entries(q).map(([id, spec]) => {
+    let extra = '';
+    if (spec.type === 'choice') {
+      extra = '<div class="chips">' + Object.entries(spec.criteria).map(([k, v]) =>
+        `<span class="chip"><b>${k}</b> ${v}</span>`).join('') + '</div>';
+    } else if (spec.type === 'score') {
+      extra = '<div class="chips">' + spec.criteria.map((c, i) =>
+        `<span class="chip">${i}. ${c}</span>`).join('') + '</div>';
+    }
+    return `<div class="q"><div class="qhead"><span class="qname">${id} <span class="type">${spec.type}</span></span></div>
+      <div class="note">${spec.instructions}</div>${extra}</div>`;
+  }).join('');
+}).catch(() => {});
+
+// ---------- 控制 ----------
+async function post(body) {
+  const res = await fetch('/api/control', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+document.getElementById('btn-toggle').onclick = async () => {
+  running = !running;
+  await post({ action: running ? 'start' : 'stop' });
+  document.getElementById('btn-toggle').textContent = running ? '暂停' : '继续';
+};
+document.getElementById('btn-reset').onclick = () => post({ action: 'reset' });
+document.getElementById('btn-release').onclick = () => { manual = []; post({ action: 'release' }); };
+document.getElementById('btn-warmup').onclick = async () => {
+  showBanner('warn', '正在加载 checkpoint（首次运行还会下载权重，可能要几十秒）…');
+  const r = await post({ action: 'warmup' });
+  if (r.error) showBanner('err', r.error);
+  else showBanner('warn', `预热完成，用时 ${(r.latency_ms || 0).toFixed(0)} ms，checkpoint=${r.model}`);
+};
+document.getElementById('sel-policy').onchange = e => post({ action: 'policy', policy: e.target.value });
+document.getElementById('rng-floor').oninput = e => {
+  document.getElementById('lbl-floor').textContent = Number(e.target.value).toFixed(2);
+};
+document.getElementById('rng-floor').onchange = e => post({ action: 'floor', value: Number(e.target.value) });
+document.getElementById('rng-speed').oninput = e => {
+  document.getElementById('lbl-speed').textContent = Number(e.target.value).toFixed(2) + '×';
+};
+document.getElementById('rng-speed').onchange = e => post({ action: 'speed', value: Number(e.target.value) });
+
+// 手动接管
+const KEYMAP = {
+  ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
+  KeyZ: 'B', KeyX: 'A', Enter: 'start', ShiftLeft: 'select', Space: 'select'
+};
+window.addEventListener('keydown', e => {
+  const b = KEYMAP[e.code];
+  if (!b) return;
+  e.preventDefault();
+  if (!manual.includes(b)) { manual.push(b); post({ action: 'manual', buttons: manual }); }
+});
+window.addEventListener('keyup', e => {
+  const b = KEYMAP[e.code];
+  if (!b) return;
+  manual = manual.filter(x => x !== b);
+  post({ action: 'manual', buttons: manual.length ? manual : null });
+});
+
+poll();
+pollTrace();
+</script>
+</body>
+</html>

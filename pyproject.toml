@@ -1,0 +1,71 @@
+# mario-laya — 让 laya 玩超级马里奥
+#
+# 依赖分两层，跑哪层取决于你想看什么：
+#
+#   基础层（默认）      numpy / flask / nes-py / pillow
+#                       跑模拟器 + 看板 + 规则层策略，不需要任何模型
+#   brain 层（可选）    laya + torch
+#                       让 laya 真正参与决策；首次运行还要从 HuggingFace 下
+#                       1.2~1.7GB checkpoint
+#
+# ---------------------------------------------------------------------------
+# torch 在 Windows 上从 PyPI 装会拉约 2.5GB 的 CUDA 构建。本项目只跑 CPU，
+# 必须单独从 CPU 索引装，国内有可用镜像（四个都实测 200）：
+#
+#   mirror.aliyun.com  →  https://mirrors.aliyun.com/pytorch-wheels/cpu/
+#   mirror.sjtu.edu.cn →  https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
+#   官方               →  https://download.pytorch.org/whl/cpu
+#
+# 本机 pip 必须显式带代理，否则索引拉不到，会误报成
+# "Could not find a version that satisfies the requirement numpy (from versions: none)"：
+#
+#   .venv\Scripts\python -m pip install --proxy http://127.0.0.1:57417 --no-cache-dir
+#
+# 完整安装见 README.md 的「快速开始」。
+# ---------------------------------------------------------------------------
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mario-laya"
+version = "0.1.0"
+description = "Super Mario Bros. driven by laya's typed decision engine, with a live dashboard"
+readme = "README.md"
+requires-python = ">=3.13"  # nes-py 只发 cp313 / cp314 wheel
+
+dependencies = [
+    "numpy>=2.0",     # 帧缓冲与 RAM 解码
+    "flask>=3.0",     # 看板
+    "nes-py>=9.0,<10",  # LaiNES 内核；action_space 是 8 键位图全 256 组合
+    "pillow>=10.0",   # 仅 /api/snapshot.png 用；缺了也不影响其余功能
+]
+
+[project.optional-dependencies]
+# 注意：这里的 torch 会从 PyPI 解析成 CUDA 构建。先按文件头注释单独装 CPU 版，
+# 再 `pip install -e ".[brain]"` —— 此时 pip 会认为 torch 已满足，不再重装。
+brain = [
+    "laya",
+    "torch>=2.4",
+]
+
+# 本地验证工具刻意只依赖标准库 + node，不引入 pytest：tools/ 下是独立脚本，
+# 用退出码表达 pass/fail，装测试框架只会多出一层没被用到的间接依赖。
+dev = []
+
+[project.scripts]
+mario-laya = "src.server:main"
+
+# web/index.html 不在包内：src/config.py 按仓库根解析它，所以本项目按
+# 「从 checkout 里就地运行」设计，装 editable 即可，不要做非 editable 安装。
+[tool.setuptools]
+packages = ["src", "tools"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]

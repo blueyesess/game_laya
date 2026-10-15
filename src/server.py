@@ -34,6 +34,7 @@ from .config import (  # noqa: E402
     ROM_DIR,
     WEB_DIR,
 )
+from .state import GameProfile, ProfileNotFound  # noqa: E402
 
 app = Flask(__name__, static_folder=None)
 runner: GameRunner | None = None
@@ -80,7 +81,7 @@ def snapshot_png():
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     buffer.seek(0)
-    return send_file(buffer, mimetype="image/png", download_name="mario-laya.png")
+    return send_file(buffer, mimetype="image/png", download_name="nes-laya.png")
 
 
 # ----------------------------------------------------------------------- state
@@ -102,8 +103,14 @@ def trace():
 
 @app.get("/api/questions")
 def questions():
-    from .brain import QUESTIONS
+    from .brain import QUESTIONS, questions_for
 
+    profile_id = request.args.get("profile")
+    if profile_id:
+        try:
+            return jsonify(questions_for(GameProfile.load(profile_id)))
+        except ProfileNotFound as exc:
+            return jsonify({"error": str(exc)}), 400
     return jsonify(QUESTIONS)
 
 
@@ -151,6 +158,12 @@ def control():
 
 
 # ------------------------------------------------------------------------ main
+def available_profiles() -> list[str]:
+    from .config import PROFILE_DIR
+
+    return sorted(p.stem for p in Path(PROFILE_DIR).glob("*.json"))
+
+
 def find_rom(explicit: str | None) -> Path:
     if explicit:
         path = Path(explicit)
@@ -161,21 +174,28 @@ def find_rom(explicit: str | None) -> Path:
     if not candidates:
         raise SystemExit(
             "No .nes file in %s.\n"
-            "Drop your own Super Mario Bros. ROM there as smb1.nes and start again.\n"
-            "(A legal homebrew .nes can be generated with: python tools/make_test_rom.py)" % ROM_DIR
+            "Drop the ROM of the game you want to drive there and start again, or pass "
+            "--rom explicitly.\n"
+            "(A legal homebrew .nes can be generated with: python tools/make_test_rom.py)"
+            % ROM_DIR
         )
-    # Prefer something that actually looks like SMB1 if several ROMs are present.
-    for path in candidates:
-        if "smb" in path.stem.lower() or "mario" in path.stem.lower():
-            return path
     return candidates[0]
 
 
 def main() -> None:
     global runner
 
-    parser = argparse.ArgumentParser(description="Watch laya play Super Mario Bros.")
+    parser = argparse.ArgumentParser(description="Watch laya play an NES game.")
     parser.add_argument("--rom", default=None, help="path to a .nes file")
+    parser.add_argument(
+        "--profile",
+        default="generic",
+        help=(
+            "game profile id from src/profiles/*.json (available: %s). "
+            "'generic' needs no per-game tuning; 'smb1' additionally reads the "
+            "community SMB1 RAM map for HUD numbers." % ", ".join(available_profiles())
+        ),
+    )
     parser.add_argument("--policy", default="hybrid", choices=("laya", "reflex", "hybrid"))
     parser.add_argument("--model", default=DEFAULT_MODEL, help="english | multilingual | typed-decisions")
     parser.add_argument("--hz", type=float, default=DEFAULT_DECISION_HZ)
@@ -185,8 +205,10 @@ def main() -> None:
     parser.add_argument("--warmup", action="store_true", help="load the checkpoint before serving")
     args = parser.parse_args()
 
+    profile = GameProfile.load(args.profile)
     rom = find_rom(args.rom)
     print("ROM      : %s" % rom)
+    print("profile  : %s (%s)" % (profile.id, profile.name))
     print("policy   : %s" % args.policy)
     print("model    : %s" % args.model)
     print("rate     : %.1f decisions/sec target, %.2fx emulator speed" % (args.hz, args.speed))
@@ -198,6 +220,7 @@ def main() -> None:
         decision_hz=args.hz,
         speed=args.speed,
         confidence_floor=args.confidence_floor,
+        profile=profile,
     )
     runner.start()
 

@@ -30,17 +30,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.brain import QUESTIONS, LayaBrain  # noqa: E402
+from src.brain import LayaBrain, questions_for  # noqa: E402
+from src.state import GameProfile  # noqa: E402
 
 REPORT = ROOT / "logs" / "brain_bench.json"
 
 # A representative observation, in the same shape scene.build_state() produces: short,
 # because laya encodes the state once per question.
 STATE = {
-    "scene": ("Mario ground at x=140. Enemy close, 24px ahead. Floor ahead solid. "
-              "900px in, small. Coins 3, time 310, lives 3."),
-    "level": "1-1",
-    "hud": [3, 310, 3],
+    "scene": ("The player is on ground at x=140. An object close ahead, 24px to the "
+              "right, 16px tall. The floor ahead is solid. 900px into the level. "
+              "Coins 3, time 310, lives 3. Goal: Reach the right side of the screen "
+              "and keep advancing without falling into a hole. Move by pressing right."),
 }
 
 
@@ -48,11 +49,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--calls", type=int, default=6)
     parser.add_argument("--model", default="multilingual")
+    parser.add_argument("--profile", default="generic", help="game profile id from src/profiles/*.json")
     args = parser.parse_args()
+
+    profile = GameProfile.load(args.profile)
+    questions = questions_for(profile)
 
     print("loading %s (first run also downloads the weights)..." % args.model, file=sys.stderr)
     t0 = time.perf_counter()
-    brain = LayaBrain(model=args.model)
+    brain = LayaBrain(model=args.model, profile=profile)
     cold_build = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -73,7 +78,7 @@ def main() -> int:
 
     lines = [
         "checkpoint            : %s" % args.model,
-        "questions per call    : %d (%s)" % (len(QUESTIONS), ", ".join(QUESTIONS)),
+        "questions per call    : %d (%s)" % (len(questions), ", ".join(questions)),
         "input tokens          : %s" % (ok[0]["usage"]["input_tokens"] if ok else "?"),
         "truncated             : %s" % (ok[0]["usage"]["truncated"] if ok else "?"),
         "",
@@ -95,7 +100,7 @@ def main() -> int:
             "  move  : %s   probs=%s" % (last["move"]["label"],
                                         {k: round(v, 3) for k, v in last["move"]["probs"].items()}),
             "  jump  : P(true)=%.4f -> %s" % (last["jump"]["p_true"],
-                                             "press A" if last["jump"]["thresholded"] else "no jump"),
+                                             "press the jump button" if last["jump"]["thresholded"] else "no jump"),
             "  risk  : %s  (expected %.2f)  legend=%s"
             % (last["risk"]["label"], last["risk"]["expected"], last["risk"]["legend"]),
             "  answer_confidence: %.3f" % last["confidence"],

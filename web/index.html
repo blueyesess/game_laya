@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>laya × Super Mario Bros. — 看着决策神经开车</title>
+<title>laya × NES — 看着决策神经开车</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -135,17 +135,17 @@
 <body>
 
 <header>
-  <h1><b>laya</b> × Super Mario Bros.</h1>
+  <h1><b>laya</b> × NES <span id="game-name" style="opacity:.6;font-weight:400"></span></h1>
   <span class="meta" id="hdr">connecting…</span>
   <span class="spacer"></span>
-  <span class="meta">决策神经 = laya Router · 环境 = nes_py (mapper 0)</span>
+  <span class="meta">决策神经 = laya Router · 环境 = nes_py · 画像 = src/profiles/*.json</span>
 </header>
 
 <div class="wrap">
   <!-- ============ 左：画面 + 控制 ============ -->
   <div style="display:flex; flex-direction:column; gap:18px;">
     <div class="card">
-      <h2>模拟器画面 <span style="text-transform:none;letter-spacing:0">· 256×240 原始帧</span></h2>
+      <h2>模拟器画面 <span style="text-transform:none;letter-spacing:0">· 256×240 原始帧 · 叠加层 = 视觉层的输出</span></h2>
       <div class="screenbox"><canvas id="screen" width="256" height="240"></canvas></div>
       <div class="lamps">
         <span class="lamp" data-btn="left">← LEFT</span>
@@ -282,16 +282,35 @@ let snap = null;
 function paint() {
   if (dirty) {
     ctx.putImageData(image, 0, 0);
-    // 叠加层：把"感知"画出来，方便核对 RAM/像素解析对不对
+    // 叠加层：把"视觉层看到的东西"画出来，方便核对感知对不对。
+    // 全部字段都来自 src/vision.py 的纯几何输出，没有任何按游戏写死的东西。
     const st = snap && snap.state;
-    if (st && st.mario_screen_x != null) {
-      ctx.fillStyle = 'rgba(255,235,59,.85)';
-      ctx.fillRect(Math.round(st.mario_screen_x), 0, 1, H);
-    }
-    if (st && st.pit_ahead && st.pit_distance != null && st.mario_screen_x != null) {
-      const x0 = st.mario_screen_x + 8;
-      ctx.fillStyle = 'rgba(248,81,73,.35)';
-      ctx.fillRect(x0, 32, Math.max(2, st.pit_distance), H - 32);
+    if (st) {
+      // 角色：黄线标出屏幕 x，黄框标出包围盒
+      if (st.character_x != null) {
+        ctx.fillStyle = 'rgba(255,235,59,.85)';
+        ctx.fillRect(Math.round(st.character_x), 0, 1, H);
+      }
+      if (st.character_visible && st.character_box) {
+        const b = st.character_box;
+        ctx.strokeStyle = 'rgba(255,235,59,.9)';
+        ctx.strokeRect(b.x_min + .5, b.y_min + .5, b.x_max - b.x_min, b.bottom - b.y_min);
+      }
+      // 塌方：红块
+      if (st.pit_ahead && st.pit_distance != null && st.character_x != null) {
+        ctx.fillStyle = 'rgba(248,81,73,.35)';
+        ctx.fillRect(st.character_x + 8, 32, Math.max(2, st.pit_distance), H - 32);
+      }
+      // 墙/障碍物：橙块
+      if (st.wall_ahead && st.wall_distance != null && st.character_x != null) {
+        ctx.fillStyle = 'rgba(210,153,34,.35)';
+        ctx.fillRect(st.character_x + st.wall_distance, 32, 6, H - 32);
+      }
+      // 其它识别到的物体：绿框
+      ctx.strokeStyle = 'rgba(63,185,80,.8)';
+      (st.blobs || []).forEach(b => {
+        ctx.strokeRect(b.x - 4 + .5, b.top + .5, 8, Math.max(2, b.height));
+      });
     }
     dirty = false;
   }
@@ -332,17 +351,21 @@ function showBanner(kind, html) {
 
 // ---------- 渲染 ----------
 function render(s) {
-  const st = s.state || {}, stats = s.stats || {};
+  const st = s.state || {}, stats = s.stats || {}, prof = s.profile || {};
   document.getElementById('hdr').textContent =
     `${stats.rom || ''} · policy=${stats.policy} · model=${stats.model}`;
+  document.getElementById('game-name').textContent = prof.name ? `· ${prof.name}` : '';
 
+  const hud = st.hud || {};
   document.getElementById('stats').innerHTML = [
     ['FPS 帧', (stats.frames || 0).toLocaleString()],
-    ['关卡位置', st.world_x != null ? st.world_x : '—'],
-    ['金币', st.coins ?? '—'],
-    ['时间', st.timer ?? '—'],
-    ['生命', st.lives ?? '—'],
-    ['状态', st.status || '—'],
+    ['画像', stats.profile || '—'],
+    ['角色 x', st.character_x != null ? st.character_x : '—'],
+    ['着地', st.on_ground === null || st.on_ground === undefined ? '未知' : (st.on_ground ? '是' : '否')],
+    ['金币', hud.coins ?? '—'],
+    ['时间', hud.timer ?? '—'],
+    ['生命', hud.lives ?? '—'],
+    ['关卡位置', st.world_x ?? '—'],
     ['决策数', stats.decisions ?? 0],
     ['laya/规则', `${stats.laya_decisions ?? 0}/${stats.reflex_decisions ?? 0}`],
     ['实测决策率', (stats.decision_hz_actual ?? 0).toFixed(1), 'Hz'],
@@ -354,27 +377,41 @@ function render(s) {
   document.querySelectorAll('.lamp').forEach(el =>
     el.classList.toggle('on', active.has(el.dataset.btn)));
 
-  // 观测。chips 用的是 s.state（SmbState 原始解码），不是 observation：
+  // 观测。chips 用的是 s.state（原始解码），不是 observation：
   // observation 是喂给模型的那段精简文本，故意很短，不足以撑起 UI。
   const obs = s.observation;
   document.getElementById('scene').textContent = obs ? obs.scene : '—';
   {
     const chips = [];
-    if (st.ram_plausible === false) {
+    if (!prof.has_ram) {
+      chips.push('<span class="chip">此画像不读 RAM</span>');
+      chips.push('<span class="chip warn">金币/时间/生命 不可用</span>');
+    } else if (st.ram_plausible === false) {
       chips.push('<span class="chip danger">RAM 映射不匹配此 ROM</span>');
       chips.push('<span class="chip warn">金币/时间/生命 不可用</span>');
       chips.push('<span class="chip warn">敌人位置 未知</span>');
     } else {
-      chips.push(`<span class="chip">金币 <b>${st.coins}</b></span>`);
-      chips.push(`<span class="chip">时间 <b>${st.timer}</b></span>`);
-      chips.push(`<span class="chip">生命 <b>${st.lives}</b></span>`);
+      chips.push(`<span class="chip">金币 <b>${hud.coins}</b></span>`);
+      chips.push(`<span class="chip">时间 <b>${hud.timer}</b></span>`);
+      chips.push(`<span class="chip">生命 <b>${hud.lives}</b></span>`);
       chips.push(`<span class="chip">关卡位置 <b>${st.world_x}</b></span>`);
-      chips.push(`<span class="chip">${st.on_ground === null || st.on_ground === undefined ? '着地 未知' : (st.on_ground ? '着地' : '腾空')}</span>`);
+      chips.push(`<span class="chip">敌人 <b>${(st.enemies || []).length}</b></span>`);
     }
-    chips.push(st.pit_ahead
-      ? `<span class="chip danger">前方塌方 <b>${st.pit_distance}px</b></span>`
-      : '<span class="chip">前方地面 实体</span>');
-    chips.push(`<span class="chip">屏幕 x <b>${st.mario_screen_x ?? '—'}</b></span>`);
+    chips.push(`<span class="chip">${st.character_visible
+      ? (st.character_uncertain ? '角色? 不确定' : '角色 已定位')
+      : '角色 不可见'}</span>`);
+    chips.push(st.climbable_ahead
+      ? '<span class="chip warn">前方 可攀爬</span>'
+      : '<span class="chip">前方 无可攀爬</span>');
+    if (st.pit_ahead) {
+      chips.push(`<span class="chip danger">前方塌方 <b>${st.pit_distance}px</b></span>`);
+    } else if (st.wall_ahead) {
+      chips.push(`<span class="chip warn">前方墙/障碍 <b>${st.wall_distance}px</b></span>`);
+    } else {
+      chips.push('<span class="chip">前方地面 实体</span>');
+    }
+    chips.push(`<span class="chip">屏幕 x <b>${st.character_x ?? '—'}</b></span>`);
+    chips.push(`<span class="chip">背景 <b>${st.backdrop || '—'}</b></span>`);
     document.getElementById('chips').innerHTML = chips.join('');
   }
 }

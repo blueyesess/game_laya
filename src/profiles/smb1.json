@@ -1,0 +1,53 @@
+{
+  "id": "smb1",
+  "name": "Super Mario Bros. (iNES, mapper 0, NTSC)",
+  "description": "SMB1 tuning on top of the generic vision layer. The RAM map below is community-documented; only the fields listed in `invariants` are trusted, and everything else degrades to 'unknown' rather than guessing.",
+  "hud_rows": 32,
+  "sprite_h": 16,
+  "max_fall_px": 40,
+  "lookahead_px": 40,
+  "climb_lookahead_px": 24,
+  "max_wall_rise": 12,
+  "goal": "Reach the flagpole at the right end of the level.",
+  "move": {
+    "progress": ["right"],
+    "back": ["left"]
+  },
+  "actions": {
+    "jump": ["A"],
+    "run": ["B"],
+    "up": ["up"],
+    "down": ["down"]
+  },
+  "jump_hold_frames": 7,
+  "ram": {
+    "player_x_page": 0,
+    "player_y_page": 1,
+    "player_y_subpx": 2,
+    "scroll_x": 3,
+    "scroll_y": 5,
+    "player_spr_x": 6,
+    "player_spr_y": 7,
+    "coins": 31,
+    "timer_high": 33,
+    "timer_low": 34,
+    "player_y_px": 36,
+    "world": 37,
+    "lives": 38,
+    "status": 39,
+    "player_x_hi": 40,
+    "player_x_lo": 41,
+    "enemy_base": 48,
+    "enemy_stride": 9,
+    "enemy_fields": {"page_col": 0, "x_hi": 1, "x_lo": 2, "y_hi": 3, "y_lo": 4},
+    "enemy_empty": [0, 0, 0],
+    "terminated_statuses": [4, 5, 6]
+  },
+  "invariants": {
+    "world": [1, 4],
+    "lives": [1, 99],
+    "coins": [0, 99],
+    "timer": [1, 400],
+    "status": [0, 1, 2, 3, 4, 5, 6]
+  }
+}

@@ -1,17 +1,15 @@
 """Print the actual colours of Mario's sprite instead of assuming them.
 
-`smb_state.find_mario` looks for pure blue ($0000FC) and Mario red ($D82800). Those are
-the values in the palette tables everyone quotes, and they work on an original SMB1
-dump -- but a re-release can ship a different palette, and then the detector finds
-nothing while the game is plainly running. That is exactly what happens here: world
-1-1 with the timer counting down, Mario standing next to the hill, and `mario_screen_x`
-reported as None for 2000+ frames.
+`src/vision.find_character` no longer looks for any colour at all -- it locates the
+player geometrically, because palette matching failed on two of three real SMB1 dumps
+(pure blue $0000FC is absent from the Virtual Console build entirely).
 
-So: locate Mario by hand, dump every colour in his sprite, and report which of the
-candidate thresholds each one satisfies. If pure blue is absent, the fix is a palette
-that matches this ROM, and this says what it should be.
+This tool remains useful for a different reason: it tells you what the character's
+actual palette is, which is the thing you would need to know to build a
+*colour-based* detector for a ROM where the geometric one struggles. It dumps every
+colour in the sprite box and reports which classic thresholds each satisfies.
 
-    python tools/probe_palette.py --rom path/to/smb.nes
+    python tools/smb1/probe_palette.py --rom path/to/smb.nes
 """
 
 from __future__ import annotations
@@ -20,19 +18,14 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
+from src.config import HUD_BOTTOM_ROW, SCREEN_H, SCREEN_W  # noqa: E402
 from src.emulator import NesRunner  # noqa: E402
-from src.smb_state import (  # noqa: E402
-    HUD_BOTTOM_ROW,
-    SCREEN_H,
-    SCREEN_W,
-    background_colour,
-    ground_profile,
-)
+from src.vision import background_colour, ground_profile  # noqa: E402
 
 # The thresholds find_mario currently uses.
 TESTS = {
@@ -53,7 +46,7 @@ def locate_mario_band(frame: np.ndarray):
     floor row comes from ground_profile(), so the box follows the actual level geometry
     instead of an assumption about it.
     """
-    ground = ground_profile(frame)
+    ground = ground_profile(frame, HUD_BOTTOM_ROW)
     rows = [g for g in ground if g < SCREEN_H]
     if not rows:
         return 0, HUD_BOTTOM_ROW, SCREEN_W, SCREEN_H
@@ -101,7 +94,7 @@ def main() -> int:
     lines = [
         "frame is %dx%d, HUD occupies the top %d rows" % (SCREEN_W, SCREEN_H, HUD_BOTTOM_ROW),
         "backdrop colour inferred from the frame: #%02X%02X%02X"
-        % tuple(int(v) for v in background_colour(frame)),
+        % tuple(int(v) for v in background_colour(frame, HUD_BOTTOM_ROW)),
         "sprite box x=%d..%d y=%d..%d  (%d pixels)"
         % (x0, x1, y0, y1, flat.shape[0]),
         "",

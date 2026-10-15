@@ -2,14 +2,15 @@
 
 There is a specific question this answers: does the ROM play at all under the reflex
 policy? Because if it does, then a hybrid run sitting on the title screen is not a ROM
-problem -- it is laya answering `move: wait` and Mario standing still.
+problem -- it is the model answering `move: wait` and the player standing still.
 
 So this drives a real GameRunner with no server, no browser and no model, samples the
-frame periodically, and writes both a PNG per sample and a table saying whether Mario
-was visible and whether the floor ahead was solid. The PNGs are the point: a table
-saying "Mario not visible" cannot distinguish a title screen from a detection failure.
+frame periodically, and writes both a PNG per sample and a table saying whether the
+player was visible and whether the floor ahead was solid. The PNGs are the point: a
+table saying "player not visible" cannot distinguish a title screen from a detection
+failure.
 
-    python tools/run_headless.py --rom path --seconds 60 [--policy reflex]
+    python tools/run_headless.py --rom path --seconds 60 [--policy reflex] [--profile generic]
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import numpy as np  # noqa: E402
 
 from src.agent import GameRunner  # noqa: E402
 from src.config import SCREEN_H, SCREEN_W  # noqa: E402
+from src.state import GameProfile  # noqa: E402
 
 OUT = ROOT / "logs" / "headless"
 
@@ -45,6 +47,7 @@ def main() -> int:
     parser.add_argument("--rom", required=True)
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--policy", default="reflex", choices=("reflex", "laya", "hybrid"))
+    parser.add_argument("--profile", default="generic", help="game profile id from src/profiles/*.json")
     parser.add_argument("--every", type=float, default=3.0, help="seconds between samples")
     parser.add_argument("--max-shots", type=int, default=20)
     args = parser.parse_args()
@@ -53,7 +56,11 @@ def main() -> int:
     for stale in OUT.glob("*.png"):
         stale.unlink()
 
-    runner = GameRunner(rom_path=args.rom, policy=args.policy)
+    runner = GameRunner(
+        rom_path=args.rom,
+        policy=args.policy,
+        profile=GameProfile.load(args.profile),
+    )
     runner.start()
 
     deadline = time.perf_counter() + args.seconds
@@ -62,7 +69,7 @@ def main() -> int:
     rows = []
 
     print("%6s %6s %8s %9s %6s %6s %8s %s"
-          % ("t(s)", "frame", "mario_x", "on_gnd", "pit", "decis", "src", "buttons"),
+          % ("t(s)", "frame", "player_x", "on_gnd", "pit", "decis", "src", "buttons"),
           file=sys.stderr)
     while time.perf_counter() < deadline:
         time.sleep(0.25)
@@ -74,7 +81,7 @@ def main() -> int:
         row = "%6.1f %6d %8s %9s %6s %6d %8s %s" % (
             args.seconds - (deadline - time.perf_counter()),
             st.frame,
-            st.mario_screen_x if st.mario_screen_x is not None else "-",
+            st.character_x if st.character_x is not None else "-",
             st.on_ground,
             st.pit_ahead,
             stats["decisions"],
@@ -102,9 +109,9 @@ def main() -> int:
     print("shots -> %s" % OUT, file=sys.stderr)
     (OUT / "log.txt").write_text("\n".join(rows), encoding="utf-8")
 
-    # A frame with Mario on it and no title card is the whole ballgame.
+    # A frame with the player on it and no title card is the whole ballgame.
     seen = [r for r in rows if r.split()[2] != "-"]
-    print("samples with Mario visible: %d / %d" % (len(seen), len(rows)), file=sys.stderr)
+    print("samples with player visible: %d / %d" % (len(seen), len(rows)), file=sys.stderr)
     return 0
 
 

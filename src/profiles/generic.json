@@ -1,0 +1,24 @@
+{
+  "id": "generic",
+  "name": "Generic NES side-scroller",
+  "description": "Palette- and RAM-agnostic profile: everything comes from the pixels. Works on any NES side-scroller where the camera follows the player.",
+  "hud_rows": 32,
+  "sprite_h": 16,
+  "max_fall_px": 40,
+  "lookahead_px": 40,
+  "climb_lookahead_px": 24,
+  "max_wall_rise": 12,
+  "goal": "Reach the right side of the screen and keep advancing without falling into a hole.",
+  "move": {
+    "progress": ["right"],
+    "back": ["left"]
+  },
+  "actions": {
+    "jump": ["A"],
+    "run": ["B"],
+    "up": ["up"],
+    "down": ["down"]
+  },
+  "jump_hold_frames": 7,
+  "ram": null
+}

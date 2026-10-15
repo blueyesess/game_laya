@@ -1,4 +1,4 @@
-# mario-laya — 让 laya 玩超级马里奥
+# nes-laya — 让 laya 玩任意 NES 游戏
 #
 # 依赖分两层，跑哪层取决于你想看什么：
 #
@@ -29,9 +29,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mario-laya"
+name = "nes-laya"
 version = "0.1.0"
-description = "Super Mario Bros. driven by laya's typed decision engine, with a live dashboard"
+description = "Any NES game driven by laya's typed decision engine, from pixels alone, with a live dashboard"
 readme = "README.md"
 requires-python = ">=3.13"  # nes-py 只发 cp313 / cp314 wheel
 
@@ -55,12 +55,16 @@ brain = [
 dev = []
 
 [project.scripts]
-mario-laya = "src.server:main"
+nes-laya = "src.server:main"
 
 # web/index.html 不在包内：src/config.py 按仓库根解析它，所以本项目按
 # 「从 checkout 里就地运行」设计，装 editable 即可，不要做非 editable 安装。
+# 画像 JSON 必须随包走 —— GameProfile.load() 是靠文件路径找它们的。
 [tool.setuptools]
-packages = ["src", "tools"]
+packages = ["src", "tools", "tools.smb1"]
+
+[tool.setuptools.package-data]
+src = ["profiles/*.json"]
 
 [tool.ruff]
 line-length = 100

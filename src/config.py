@@ -1,7 +1,13 @@
-"""Shared configuration: paths, NES button bitmap, SMB1 RAM map, tunables.
+"""Shared configuration: paths, NES button bitmap, tunables.
 
 Everything that another module might need to agree on lives here, so there is exactly
 one place to look when a constant turns out to be wrong.
+
+Note what is *not* here any more: the SMB1 RAM map, the SMB1 palette tables and the
+SMB1 status codes. Those were game knowledge, and hard-coding game knowledge is what
+made the previous version un-runnable on any other ROM. They live in
+`src/profiles/smb1.json` now, loaded through `src/state.GameProfile`, so a new game is
+a JSON file rather than an edit to this module.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ ROM_DIR = ROOT / "roms"
 WEB_DIR = ROOT / "web"
 LOG_DIR = ROOT / "logs"
 DECISION_LOG = LOG_DIR / "decisions.jsonl"
+PROFILE_DIR = ROOT / "src" / "profiles"
 
 # ----------------------------------------------------------------- video
 SCREEN_W = 256
@@ -49,86 +56,10 @@ def buttons_to_byte(names) -> int:
     return byte
 
 
-# ----------------------------------------------------------------- SMB1 RAM map
-# Community-documented addresses for Super Mario Bros. (iNES, mapper 0, NTSC).
-#
-# HONESTY NOTE: $0021/$0025/$0026/$0027 (timer, world, lives, status) and the
-# $0028-$002A player-position bytes are stable across every SMB1 map and are
-# trusted. The enemy slots at $0030-$0056 come from the same community maps and
-# are *plausible but not verified* -- the offsets differ between the Datacrystal
-# and Southbird tables by a byte or two in places. tools/dump_ram.py exists to
-# verify them empirically in one minute once a ROM is present, and every decode
-# below degrades to "unknown" rather than guessing when a value is out of range.
-RAM = {
-    # --- player -------------------------------------------------------------
-    "player_x_page": 0x00,  # bits 8..15 of the absolute world X
-    "player_y_page": 0x01,  # bits 8..15 of the absolute world Y
-    "player_y_subpx": 0x02,
-    "scroll_x": 0x03,  # low 8 bits of the camera
-    "scroll_y": 0x05,
-    "player_spr_x": 0x06,  # fine sub-tile offsets
-    "player_spr_y": 0x07,
-    "coins": 0x1F,  # BCD, 00-99
-    "timer_high": 0x21,
-    "timer_low": 0x22,  # combined with 0x21 -> 8-bit countdown, ticks at ~24/s
-    "player_y_px": 0x24,
-    "world": 0x25,
-    "lives": 0x26,
-    "status": 0x27,
-    "player_x_hi": 0x28,
-    "player_x_lo": 0x29,
-    # --- four enemy slots, 9 bytes each starting at 0x30 --------------------
-    "enemy_base": 0x30,
-}
-
-# $27 player status codes
-STATUS_SMALL = 0x00
-STATUS_GROWING = 0x01
-STATUS_BIG = 0x02
-STATUS_SHRINKING = 0x03
-STATUS_DEAD = 0x04
-STATUS_CLEAR = 0x05
-STATUS_GAME_OVER = 0x06
-
-STATUS_NAMES = {
-    STATUS_SMALL: "small",
-    STATUS_GROWING: "growing",
-    STATUS_BIG: "big",
-    STATUS_SHRINKING: "shrinking",
-    STATUS_DEAD: "dead",
-    STATUS_CLEAR: "level_clear",
-    STATUS_GAME_OVER: "game_over",
-}
-
-# Enemy slot layout, relative to RAM["enemy_base"]. Offsets are the community
-# values; dump_ram.py is how you confirm them for your ROM.
-ENEMY_STRIDE = 9
-ENEMY_FIELDS = {
-    "page_col": 0,
-    "x_hi": 1,
-    "x_lo": 2,
-    "y_hi": 3,
-    "y_lo": 4,
-    "spr_x": 5,
-    "spr_y": 6,
-}
-
-# An enemy slot is "empty" when its page column is 0 and the coordinates are 0.
-ENEMY_EMPTY = (0x00, 0x00, 0x00)
-
-# ----------------------------------------------------------------- SMB1 palette
-# The handful of colours we classify pixels against when reading the framebuffer.
-# Mario is red/blue, Goombas and bricks are orange-brown, pipes and Koopas green.
-C_SKY = (0x5C, 0x94, 0xFC)
-C_MARIO_RED = (0xD8, 0x28, 0x00)
-C_MARIO_BLUE = (0x00, 0x00, 0xFC)
-C_BRICK = (0xC8, 0x4C, 0x0C)
-C_GROUND = (0xE4, 0x5C, 0x10)
-C_PIPE = (0x00, 0xA8, 0x00)
-C_GOOMBA = (0x9C, 0x4A, 0x00)
-C_UNDERGROUND = (0x00, 0x00, 0x00)
-
 # Where the status-bar / HUD sits. The playfield below it is what we reason about.
+# 32 is the NES's own attribute/HUD band height and both shipped profiles use it,
+# but a profile can override it -- this is only the fallback for a frame decoder
+# built without one.
 HUD_BOTTOM_ROW = 32
 
 # ----------------------------------------------------------------- agent tunables

@@ -30,13 +30,27 @@ import math
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
 from src.emulator import NesRunner  # noqa: E402
-from src.smb_state import find_mario  # noqa: E402
+from src.state import GameProfile  # noqa: E402
+from src.vision import analyse, find_character  # noqa: E402
+
+PROFILE = GameProfile.load("smb1")
+
+
+def find_mario(screen):
+    """The pixel-derived ground truth this tool correlates RAM against.
+
+    Delegates to the generic geometric detector with the SMB1 profile. It is
+    independent of RAM by construction, which is the whole reason it can serve
+    as the arbiter when the RAM map disagrees with itself.
+    """
+    vis = analyse(screen, hud_rows=PROFILE.hud_rows)
+    return find_character(screen, vis, PROFILE)
 
 SCAN = 0x100  # scan the first page plus a bit; SMB1 keeps its whole state low
 REPORT = ROOT / "logs" / "find_ram.json"

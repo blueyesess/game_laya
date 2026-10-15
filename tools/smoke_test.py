@@ -1,7 +1,7 @@
 """End-to-end smoke test on the homebrew ROM.
 
-This is the only part of the project that can be proven without a Super Mario Bros.
-ROM, so it checks everything that is not SMB1-specific:
+This is the only part of the project that can be proven without a commercial ROM, so
+it checks everything that is not game-specific:
 
 1. the test ROM assembles into a structurally valid iNES file
 2. nes_py hands back a 240x256x3 framebuffer
@@ -10,8 +10,9 @@ ROM, so it checks everything that is not SMB1-specific:
 4. button presses reach the 6502 program, which reads them back into RAM at $0301/$0300
    with A in bit 0 ... RIGHT in bit 7
 5. the frame actually changes colour with the controller, i.e. the video path works
-6. smb_state.decode / scene.build_state survive a real framebuffer
-7. the Flask app imports and exposes its routes
+6. state.Decoder (generic, profile-driven) / scene.build_state survive a real framebuffer
+7. the profile layer loads a profile and maps move labels back to buttons
+8. the Flask app imports and exposes its routes
 
 Results are written to logs/smoke_report.json as well as stderr, because stdout is
 swallowed by some shells.
@@ -28,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.config import BUTTON_BITS, buttons_to_byte  # noqa: E402
-from src.smb_state import decode  # noqa: E402
+from src.state import Decoder, GameProfile  # noqa: E402
 
 ROM = ROOT / "roms" / "inputtest.nes"
 REPORT = ROOT / "logs" / "smoke_report.json"
@@ -144,19 +145,26 @@ def main() -> int:
     check("holding RIGHT changes what the PPU draws", diff > 0, "channel sum delta %d" % diff)
 
     # ------------------------------------------------------- 6. decode survives
+    profile = GameProfile.load("generic")
+    decoder = Decoder(profile)
     try:
-        state = decode(runner.ram, right_frame, runner.frame_index)
+        state = decoder.decode(runner.ram, right_frame, runner.frame_index)
         obs_fields = state.to_dict()
-        ok = "world_x" in obs_fields and "status" in obs_fields
-        check("smb_state.decode() handles a real frame", ok, json.dumps(obs_fields)[:160])
+        ok = "character_visible" in obs_fields and "pit_ahead" in obs_fields
+        check("state.Decoder() handles a real frame", ok, json.dumps(obs_fields)[:160])
+        check(
+            "a profile with no RAM map never invents HUD numbers",
+            not state.ram_plausible and not state.hud,
+            "ram_plausible=%s hud=%s" % (state.ram_plausible, state.hud),
+        )
     except Exception as exc:  # noqa: BLE001
-        check("smb_state.decode() handles a real frame", False, repr(exc))
+        check("state.Decoder() handles a real frame", False, repr(exc))
         traceback.print_exc(file=sys.stderr)
 
     from src.scene import build_state
 
     try:
-        obs = build_state(state)
+        obs = build_state(state, profile)
         # The observation is deliberately tiny -- laya re-encodes it once per question,
         # so every word costs three forward passes' worth of context. Check the shape,
         # not the richness.
@@ -166,16 +174,41 @@ def main() -> int:
             obs.get("scene", "")[:120],
         )
         check(
-            "an unverified RAM map suppresses the HUD numbers instead of inventing them",
-            (not state.ram_plausible)
-            and "hud" not in obs
-            and "unknown" in obs["scene"].lower(),
-            "ram_plausible=%s keys=%s" % (state.ram_plausible, sorted(obs)),
+            "an unverifiable RAM map suppresses the HUD numbers instead of inventing them",
+            "hud" not in obs and "unknown" in obs["scene"].lower(),
+            "keys=%s" % sorted(obs),
         )
     except Exception as exc:  # noqa: BLE001
         check("scene.build_state() produces a laya state", False, repr(exc))
 
-    # ------------------------------------------------------------- 7. web routes
+    # ------------------------------------------- 7. profile -> buttons mapping
+    try:
+        from src.brain import questions_for
+        from src.reflex import ReflexPolicy
+
+        questions = questions_for(profile)
+        check(
+            "questions_for() is driven by the profile's move vocabulary",
+            set(questions["move"]["criteria"]) == set(profile.move) | {"wait"},
+            "criteria=%s" % sorted(questions["move"]["criteria"]),
+        )
+        policy = ReflexPolicy(profile)
+        decision = policy.act(state)
+        check(
+            "the reflex policy emits only buttons the NES knows",
+            all(b in BUTTON_BITS for b in decision["buttons"]),
+            "buttons=%s" % (decision["buttons"],),
+        )
+        check(
+            "the reflex policy advances in the profile's progress direction",
+            set(profile.progress_buttons) <= set(decision["buttons"]),
+            "progress=%s buttons=%s" % (profile.progress_buttons, decision["buttons"]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        check("profile drives the question schema and the reflex policy", False, repr(exc))
+        traceback.print_exc(file=sys.stderr)
+
+    # ------------------------------------------------------------- 8. web routes
     try:
         from src.server import app
 

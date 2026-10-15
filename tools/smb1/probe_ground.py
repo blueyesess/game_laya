@@ -5,6 +5,9 @@ probe_palette reported "sprite box x=0..256 y=32..240", which is its fallback fo
 the function or a fallback bug, and guessing between them from the outside wastes more
 time than printing the intermediate values.
 
+Both functions now live in the generic vision layer (src/vision.py), so this tool works
+on any ROM's saved frame, not just SMB1's.
+
     python tools/probe_ground.py logs/palette_probe.png
 """
 
@@ -13,12 +16,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
-from src.smb_state import HUD_BOTTOM_ROW, SCREEN_H, background_colour, ground_profile  # noqa: E402
+from src.config import HUD_BOTTOM_ROW, SCREEN_H  # noqa: E402
+from src.vision import background_colour, ground_profile  # noqa: E402
 
 
 def main() -> int:
@@ -32,7 +36,7 @@ def main() -> int:
     # The saved PNG is 3x, so scale it back down before decoding.
 
     lines = []
-    backdrop = background_colour(frame)
+    backdrop = background_colour(frame, HUD_BOTTOM_ROW)
     lines.append("backdrop colour  : #%02X%02X%02X" % tuple(int(v) for v in backdrop))
     lines.append("frame shape      : %s" % (frame.shape,))
 
@@ -44,7 +48,7 @@ def main() -> int:
         lines.append("  playfield row %3d (screen %3d): min=%3d  median=%3d"
                      % (row, row + HUD_BOTTOM_ROW, int(band.min()), int(np.median(band))))
 
-    profile = ground_profile(frame)
+    profile = ground_profile(frame, HUD_BOTTOM_ROW)
     solid_cols = profile < SCREEN_H
     lines.append("")
     lines.append("columns with a solid pixel : %d / %d" % (int(solid_cols.sum()), len(profile)))

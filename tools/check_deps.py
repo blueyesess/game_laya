@@ -91,8 +91,12 @@ def main() -> int:
     stdlib = set(sys.stdlib_module_names)
 
     imports = {}
+    # rglob rather than glob: tools/smb1/ is a real package with its own modules,
+    # and a flat scan silently stops checking the moment a sub-package appears.
     for folder in (ROOT / "src", ROOT / "tools"):
-        for path in sorted(folder.glob("*.py")):
+        for path in sorted(folder.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
             imports[str(path.relative_to(ROOT)).replace("\\", "/")] = top_level_imports(path)
 
     mapping = packages_distributions()
@@ -164,8 +168,19 @@ def main() -> int:
     check("console-script entry points resolve", not bad_scripts,
           "; ".join(bad_scripts) if bad_scripts else ", ".join(project.get("scripts") or {}))
 
-    packages = set((data.get("tool", {}).get("setuptools", {}) or {}).get("packages", []))
-    on_disk = {p.name for p in ROOT.iterdir() if p.is_dir() and (p / "__init__.py").exists()}
+    # setuptools spells a sub-package with dots ("tools.smb1"); normalise both sides
+    # to paths so a dotted declaration is not reported as missing.
+    packages = {
+        name.replace(".", "/")
+        for name in (data.get("tool", {}).get("setuptools", {}) or {}).get("packages", [])
+    }
+    # Every directory holding an __init__.py is a package, at any depth -- a flat
+    # top-level scan misses tools/smb1/ and would let it ship undeclared.
+    on_disk = {
+        str(path.parent.relative_to(ROOT)).replace("\\", "/")
+        for path in ROOT.rglob("__init__.py")
+        if not set(path.parts) & {"logs", ".venv", "roms", "__pycache__", ".git"}
+    }
     missing = sorted(on_disk - packages)
     check("[tool.setuptools] packages covers every package on disk",
           not missing, "missing from packages: %s" % missing if missing else ", ".join(sorted(packages)))

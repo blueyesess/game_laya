@@ -15,11 +15,11 @@ any single address being right:
   of them is wrong and the table tells you which way.
 
 * **A full 2 KB hexdump** at a few checkpoints, so an address that is obviously wrong
-  can be spotted and fixed in src/config.py in one line.
+  can be spotted and fixed in src/profiles/smb1.json in one line.
 
 Usage
 -----
-    python tools/dump_ram.py --rom roms/smb1.nes --script "wait*90,right*300"
+    python tools/smb1/dump_ram.py --rom roms/smb1.nes --script "wait*90,right*300"
 
 The report is written to logs/ram_dump.json; stdout is unreliable in some shells, so
 the tool also prints to stderr.
@@ -32,13 +32,14 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.emulator import NesRunner  # noqa: E402
-from src.smb_state import decode  # noqa: E402
+from src.state import Decoder, GameProfile  # noqa: E402
 
 REPORT = ROOT / "logs" / "ram_dump.json"
+PROFILE = GameProfile.load("smb1")
 
 
 def parse_script(text: str):
@@ -69,6 +70,7 @@ def main() -> int:
     hex_at = {int(x) for x in args.hexdump_at.split(",") if x.strip()}
 
     runner = NesRunner(args.rom)
+    decoder = Decoder(PROFILE)
     samples = []
     hexdumps = {}
 
@@ -78,21 +80,21 @@ def main() -> int:
         for _ in range(count):
             runner.step(pressed)
             frame_no += 1
-            state = decode(runner.ram, runner.screen, frame_no)
+            state = decoder.decode(runner.ram, runner.screen, frame_no)
             if frame_no % args.every == 0:
                 samples.append(
                     {
                         "frame": frame_no,
                         "buttons": buttons,
                         "world_x": state.world_x,
-                        "mario_screen_x": state.mario_screen_x,
+                        "character_x": state.character_x,
                         "on_ground": state.on_ground,
-                        "status": state.status_name,
-                        "coins": state.coins,
-                        "timer": state.timer,
-                        "lives": state.lives,
+                        "status": state.hud.get("status"),
+                        "coins": state.hud.get("coins"),
+                        "timer": state.hud.get("timer"),
+                        "lives": state.hud.get("lives"),
                         "enemies": [
-                            {"dx": e.dx_from(state.world_x), "y": e.y, "on_screen": e.on_screen}
+                            {"dx": e["dx"], "y": e["y"]}
                             for e in state.enemies
                         ],
                         "pit_ahead": state.pit_ahead,
@@ -106,7 +108,7 @@ def main() -> int:
 
     header = (
         "%6s %5s %9s %6s %10s %6s %5s %6s %5s %s"
-        % ("frame", "btn", "world_x", "marioX", "on_ground", "status", "coins", "timer", "lives", "enemies")
+        % ("frame", "btn", "world_x", "charX", "on_ground", "status", "coins", "timer", "lives", "enemies")
     )
     print(header, file=sys.stderr)
     print("-" * len(header), file=sys.stderr)
@@ -115,7 +117,7 @@ def main() -> int:
             "%6d %5s %9d %6s %10s %6s %5d %6d %5d %s"
             % (
                 row["frame"], row["buttons"][:5], row["world_x"],
-                row["mario_screen_x"] if row["mario_screen_x"] is not None else "-",
+                row["character_x"] if row["character_x"] is not None else "-",
                 row["on_ground"], row["status"], row["coins"], row["timer"], row["lives"],
                 ",".join(str(e["dx"]) for e in row["enemies"]) or "-",
             ),
@@ -126,9 +128,9 @@ def main() -> int:
     print("\nRAM/pixel agreement: %s" % json.dumps(agreement), file=sys.stderr)
     if not agreement["consistent"]:
         print(
-            "  world_x and Mario's on-screen position disagree. Check RAM['player_x_hi']"
-            " / RAM['player_x_lo'] in src/config.py, or the colour thresholds in"
-            " src/smb_state.py find_mario().",
+            "  world_x and the character's on-screen position disagree. Check the"
+            " player_x_hi / player_x_lo addresses in src/profiles/smb1.json, or the"
+            " geometric detector in src/vision.py find_character().",
             file=sys.stderr,
         )
 
@@ -143,7 +145,7 @@ def main() -> int:
 
 
 def _ram_pixel_agreement(samples) -> dict:
-    """Compare how fast world_x and mario_screen_x move while RIGHT is held.
+    """Compare how fast world_x and the character's on-screen position move.
 
     Both describe the same motion, so their per-frame deltas should be close. The
     screen value wraps at the camera edge, so only samples where both moved forward
@@ -153,10 +155,10 @@ def _ram_pixel_agreement(samples) -> dict:
     for prev, cur in zip(samples, samples[1:]):
         if cur["buttons"] != "right" or prev["buttons"] != "right":
             continue
-        if prev["mario_screen_x"] is None or cur["mario_screen_x"] is None:
+        if prev["character_x"] is None or cur["character_x"] is None:
             continue
         d_ram = cur["world_x"] - prev["world_x"]
-        d_px = cur["mario_screen_x"] - prev["mario_screen_x"]
+        d_px = cur["character_x"] - prev["character_x"]
         if d_ram <= 0 or d_px < 0 or d_px > 16:
             continue  # wrapped at the screen edge, or stopped
         pairs.append((d_ram, d_px))
@@ -165,8 +167,8 @@ def _ram_pixel_agreement(samples) -> dict:
         return {"consistent": None, "note": "not enough forward-moving samples", "samples": 0}
 
     ratio = (sum(p[0] for p in pairs) / len(pairs)) / max(1e-6, sum(p[1] for p in pairs) / len(pairs))
-    # world_x counts whole pixels; mario_screen_x is bounded by the camera. A ratio
-    # near 1.0 means the two agree that Mario moved.
+    # world_x counts whole pixels; the screen position is bounded by the camera. A
+    # ratio near 1.0 means the two agree that the player moved.
     return {
         "consistent": 0.5 <= ratio <= 2.0,
         "ratio_world_x_to_pixels": round(ratio, 3),

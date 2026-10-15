@@ -11,10 +11,14 @@ questions costs on the order of 145 ms. So:
 
 Nobody ever waits on anybody. If the brain stalls for 400 ms the emulator still runs
 at full speed and simply repeats the last action -- which is exactly how held
-controller input behaves, and SMB1 is built to be played that way.
+controller input behaves, and NES games are built to be played that way.
 
 A third source of buttons sits on top of both: manual override from the dashboard,
 so you can grab the controller mid-run.
+
+Everything game-specific is injected through a `GameProfile`, so this loop drives
+any NES ROM that a profile can describe -- it holds no palette, no RAM map and no
+button assumptions of its own.
 """
 
 from __future__ import annotations
@@ -27,14 +31,13 @@ from typing import Optional
 
 import numpy as np
 
-from .brain import LayaBrain, decision_to_buttons
+from .brain import LayaBrain
 from .config import (
     DECISION_LOG,
     DEFAULT_CONFIDENCE_FLOOR,
     DEFAULT_DECISION_HZ,
     DEFAULT_MODEL,
     DEFAULT_SPEED,
-    JUMP_HOLD_FRAMES,
     LOG_DIR,
     SCREEN_H,
     SCREEN_W,
@@ -42,27 +45,27 @@ from .config import (
 from .emulator import FramePacer, NesRunner, frame_to_rgb_bytes
 from .reflex import ReflexPolicy
 from .scene import build_state
-from .smb_state import SmbState, decode
+from .state import Decoder, GameProfile, GameState
 
-# How long Mario may be off screen before we assume the game is waiting for a START
-# press, and how that press is delivered.
+# How long the player may be off screen before we assume the game is waiting for a
+# START press, and how that press is delivered.
 #
 # Two bugs lived here, both found by running the real ROM rather than by reading code.
 #
 # 1. This used to be a one-shot budget, `frame < 900`. It works right up until it
 #    doesn't: once the counter passes, START is never pressed again, so a run that
 #    later lands on a title card stays there forever. Observed at frame 8000 with the
-#    world-1-1 HUD, a Goomba and the ground all on screen and the title card drawn
+#    world-1-1 HUD, an enemy and the ground all on screen and the title card drawn
 #    over the top of them.
 #
-# 2. Holding START continuously is not a press. SMB1's title screen uses edge
-#    detection, and the title -> "1 PLAYER GAME" -> world-card sequence needs two
-#    separate presses. Holding the button gave exactly one edge: measured over 45
-#    seconds and 2400 frames with START down the whole time, Mario never appeared
+# 2. Holding START continuously is not a press. Title screens use edge detection,
+#    and the title -> "1 PLAYER GAME" -> world-card sequence needs two separate
+#    presses. Holding the button gave exactly one edge: measured over 45 seconds
+#    and 2400 frames with START down the whole time, the player never appeared
 #    once. It has to be pulsed.
 #
-# "Mario has not been visible for N frames" is the actual condition, and it holds at
-# boot, after a death and after a game over without any special-casing.
+# "The player has not been visible for N frames" is the actual condition, and it
+# holds at boot, after a death and after a game over without any special-casing.
 START_MASH_AFTER_FRAMES = 24
 START_PULSE_PERIOD = 24   # frames between rising edges
 START_PULSE_ON = 6         # frames the button is actually down
@@ -77,29 +80,32 @@ class GameRunner:
         decision_hz: float = DEFAULT_DECISION_HZ,
         speed: float = DEFAULT_SPEED,
         confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR,
-        jump_hold: int = JUMP_HOLD_FRAMES,
+        jump_hold: int | None = None,
         brain: Optional[LayaBrain] = None,
+        profile: GameProfile | None = None,
     ):
         if policy not in ("laya", "reflex", "hybrid"):
             raise ValueError("policy must be laya, reflex or hybrid")
+        self.profile = profile or GameProfile.load("generic")
         self.policy = policy
         self.model = model
         self.decision_hz = max(decision_hz, 0.05)
         self.speed = speed
         self.confidence_floor = confidence_floor
-        self.jump_hold = jump_hold
+        self.jump_hold = jump_hold or self.profile.jump_hold_frames
 
         self.runner = NesRunner(rom_path)
-        self.reflex = ReflexPolicy(jump_hold=jump_hold)
+        self.decoder = Decoder(self.profile)
+        self.reflex = ReflexPolicy(self.profile, jump_hold=self.jump_hold)
         self.brain = brain
 
         self._lock = threading.Lock()
-        self._state: Optional[SmbState] = None
+        self._state: Optional[GameState] = None
         self._frame_bytes: Optional[bytes] = None
         self._base_buttons: tuple = ()
         self._jump_until_frame = -1
         self._manual: Optional[tuple] = None
-        self._last_mario_frame = 0
+        self._last_player_frame = 0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._brain_thread: Optional[threading.Thread] = None
@@ -119,13 +125,14 @@ class GameRunner:
             "started_at": None,
             "policy": policy,
             "model": model,
+            "profile": self.profile.id,
             "rom": str(rom_path),
         }
 
         # Prime a frame so the dashboard has something to show immediately.
         frame = self.runner.screen
         self._frame_bytes = frame_to_rgb_bytes(frame)
-        self._state = decode(self.runner.ram, frame, 0)
+        self._state = self.decoder.decode(self.runner.ram, frame, 0)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ control
@@ -144,7 +151,7 @@ class GameRunner:
 
     def _ensure_brain_thread(self) -> None:
         if self.policy in ("laya", "hybrid") and self.brain is None:
-            self.brain = LayaBrain(model=self.model)
+            self.brain = LayaBrain(model=self.model, profile=self.profile)
         if self._brain_thread is not None:
             return
         self._brain_thread = threading.Thread(target=self._brain_loop, name="brain", daemon=True)
@@ -165,7 +172,7 @@ class GameRunner:
             # Build the brain *before* committing the policy change, so a missing laya
             # install leaves the runner on its current policy instead of half-switched.
             if self.brain is None:
-                self.brain = LayaBrain(model=self.model)
+                self.brain = LayaBrain(model=self.model, profile=self.profile)
         self.policy = policy
         self.stats["policy"] = policy
         if self._running:
@@ -191,14 +198,15 @@ class GameRunner:
             self._manual = None
             self._base_buttons = ()
             self._jump_until_frame = -1
-            self._last_mario_frame = 0
-            self.reflex = ReflexPolicy(jump_hold=self.jump_hold)
+            self._last_player_frame = 0
+            self.reflex = ReflexPolicy(self.profile, jump_hold=self.jump_hold)
+        self.decoder.reset()
         self.runner.reset()
         self.trace.clear()
 
     # ------------------------------------------------------------------ reads
     @property
-    def state(self) -> Optional[SmbState]:
+    def state(self) -> Optional[GameState]:
         with self._lock:
             return self._state
 
@@ -212,13 +220,21 @@ class GameRunner:
             st = self._state
             return {
                 "state": st.to_dict() if st else None,
-                "observation": build_state(st) if st else None,
+                "observation": build_state(st, self.profile) if st else None,
                 "buttons": sorted(self._current_buttons_locked(st)),
                 "manual": sorted(self._manual) if self._manual else None,
                 "stats": dict(self.stats),
+                "profile": {
+                    "id": self.profile.id,
+                    "name": self.profile.name,
+                    "goal": self.profile.goal,
+                    "actions": self.profile.actions,
+                    "jump_buttons": list(self.profile.jump_buttons),
+                    "has_ram": self.profile.ram is not None,
+                },
             }
 
-    def _current_buttons_locked(self, st: Optional[SmbState]) -> tuple:
+    def _current_buttons_locked(self, st: Optional[GameState]) -> tuple:
         if self._manual is not None:
             return self._manual
         if st is not None and self._needs_start(st):
@@ -229,23 +245,24 @@ class GameRunner:
             return ()
         buttons = list(self._base_buttons)
         if st is not None and self._jump_until_frame > st.frame:
-            if "A" not in buttons:
-                buttons.append("A")
+            for name in self.profile.jump_buttons:
+                if name not in buttons:
+                    buttons.append(name)
         return tuple(buttons)
 
-    def _needs_start(self, st: SmbState) -> bool:
+    def _needs_start(self, st: GameState) -> bool:
         """Is the game sitting on a screen that only a START press will leave?
 
-        SMB1 draws no Mario on the title screen, the world card, a death animation or
-        a game-over screen, and his sprite carries the only pure blue in the game, so
-        "no Mario on the playfield" is a reliable proxy for all four. START does
-        nothing during ordinary play, so mashing it when this is wrongly true is
-        harmless -- which is the right trade against getting stuck.
+        Title screens, level cards, death animations and game-over screens all
+        share one property: the player sprite is absent from the playfield. So
+        "no player visible" is the trigger, and it needs no per-game knowledge.
+        START does nothing during ordinary play, so mashing it when this is
+        wrongly true is harmless -- the right trade against getting stuck.
         """
-        if st.mario_screen_x is not None:
-            self._last_mario_frame = st.frame
+        if st.character_visible:
+            self._last_player_frame = st.frame
             return False
-        return (st.frame - self._last_mario_frame) > START_MASH_AFTER_FRAMES
+        return (st.frame - self._last_player_frame) > START_MASH_AFTER_FRAMES
 
     # ------------------------------------------------------------------ threads
     def _emulator_loop(self) -> None:
@@ -268,7 +285,7 @@ class GameRunner:
 
             frame = self.runner.screen
             index = self.runner.frame_index
-            new_state = decode(self.runner.ram, frame, index)
+            new_state = self.decoder.decode(self.runner.ram, frame, index)
             payload = frame_to_rgb_bytes(frame)
 
             with self._lock:
@@ -288,7 +305,7 @@ class GameRunner:
                 time.sleep(0.05)
                 continue
 
-            observation = build_state(st)
+            observation = build_state(st, self.profile)
             decision, source = self._decide(st, observation)
 
             if decision.get("ok") and decision.get("move", {}).get("buttons") is not None:
@@ -313,7 +330,7 @@ class GameRunner:
             if elapsed < interval:
                 time.sleep(interval - elapsed)
 
-    def _decide(self, st: SmbState, observation: dict):
+    def _decide(self, st: GameState, observation: dict):
         """Returns (decision, source) where source is 'laya' or 'reflex'."""
         if self.policy == "reflex":
             return self.reflex.act(st), "reflex"

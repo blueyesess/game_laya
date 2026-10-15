@@ -26,13 +26,21 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.emulator import NesRunner  # noqa: E402
-from src.smb_state import find_mario  # noqa: E402
+from src.state import GameProfile  # noqa: E402
+from src.vision import analyse, find_character  # noqa: E402
 
 SCAN = 0x100
+PROFILE = GameProfile.load("smb1")
+
+
+def find_mario(screen):
+    """The pixel-derived ground truth, independent of any RAM address."""
+    vis = analyse(screen, hud_rows=PROFILE.hud_rows)
+    return find_character(screen, vis, PROFILE)
 
 
 def _mario_x(runner) -> int | None:

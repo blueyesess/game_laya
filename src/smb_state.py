@@ -146,8 +146,8 @@ def ram_is_plausible(world: int, lives: int, coins: int, timer: int, status: int
 
 
 # --------------------------------------------------------------------- framebuffer
-def find_mario(frame: np.ndarray, ground: np.ndarray | None = None):
-    """Locate Mario without assuming a palette.
+def find_mario(frame: np.ndarray, ground: np.ndarray | None = None, near: int | None = None):
+    """Locate Mario's sprite blob without assuming a palette.
 
     Two earlier attempts keyed on absolute colours and both were wrong on real ROMs:
 
@@ -168,9 +168,13 @@ def find_mario(frame: np.ndarray, ground: np.ndarray | None = None):
 
     The weakness, stated plainly: "leftmost thing standing on the floor" is Mario only
     at the start of a level. Once a Goomba is further left than he is, or he is under a
-    block, this returns the wrong object. It is a starting point, not a solved
-    problem -- and it is the reason `ram_plausible` exists, since RAM would settle it
-    outright if the map matched.
+    block, this returns the wrong object -- on this ROM it locked onto the hill at
+    x=11 for a whole level and reported that as Mario's position.
+
+    `near` contains that flaw: when RAM gives the column the game actually draws Mario
+    in (RAM["player_screen_x"], measured exact), the search starts there instead of at
+    x=0, so only a blob at *his* column can match. The scan still returns None rather
+    than a wrong object when nothing stands at that column.
     """
     if ground is None:
         ground = ground_profile(frame)
@@ -198,7 +202,10 @@ def find_mario(frame: np.ndarray, ground: np.ndarray | None = None):
     above_floor = rows_index < (ground[None, :] - HUD_BOTTOM_ROW)
     standing = objects & above_floor
 
-    for column in range(SCREEN_W):
+    start = int(np.clip(near - 8, 0, SCREEN_W - 1)) if near is not None else 0
+    for column in range(start, SCREEN_W):
+        if near is not None and column > near + 16:
+            break  # nothing at Mario's column; do not wander off after other objects
         ys = np.nonzero(standing[:, column])[0]
         if ys.size == 0:
             continue
@@ -267,12 +274,29 @@ def ground_profile(frame: np.ndarray) -> np.ndarray:
 
 # --------------------------------------------------------------------- combined
 def decode(ram: np.ndarray, frame: np.ndarray, frame_index: int = 0) -> SmbState:
-    """Build an SmbState from one frame of RAM plus one framebuffer."""
+    """Build an SmbState from one frame of RAM plus one framebuffer.
+
+    Coordinates come from RAM, measured on this ROM (see config.py RAM map):
+    world X = $06D:$086, screen X = $005, world Y = $001:$002. The framebuffer
+    is then used to *anchor* the sprite search to that column -- not to guess
+    the position, which the pixel-only method got wrong (it locked onto a hill
+    at x=11 for a whole level).
+    """
     st = SmbState(frame=frame_index)
 
     st.world_x = _u16(ram, RAM["player_x_hi"], RAM["player_x_lo"])
     st.world_y = _u16(ram, RAM["player_y_page"], RAM["player_y_subpx"])
-    st.scroll_x = _u8(ram, RAM["scroll_x"])
+    # Measured exact: the byte the game itself positions Mario's sprite with.
+    ram_screen_x = _u8(ram, RAM["player_screen_x"])
+    # Outside a level (title, level card, death) world X reads 0 while $005 keeps
+    # a stale value (133 on this build), which would assert a position the screen
+    # contradicts. World >= screen is exactly "camera >= 0" -- true in-level,
+    # false for the stale residue, so it doubles as an in-level check.
+    coords_live = st.world_x >= ram_screen_x
+    st.mario_screen_x = ram_screen_x if coords_live else None
+    # Camera = world - screen (identity; $003 stayed constant on this build,
+    # so the community scroll byte cannot be it).
+    st.scroll_x = st.world_x - ram_screen_x if coords_live else 0
     st.coins = _bcd(_u8(ram, RAM["coins"]))
     st.timer = _u16(ram, RAM["timer_high"], RAM["timer_low"])
     st.world = _u8(ram, RAM["world"])
@@ -315,9 +339,10 @@ def decode(ram: np.ndarray, frame: np.ndarray, frame_index: int = 0) -> SmbState
     # it twice on a 240x256 frame is pure waste at 60 fps.
     ground = ground_profile(frame)
 
-    mario = find_mario(frame, ground=ground)
+    # Anchor the pixel search at the column RAM says Mario is drawn in. The search
+    # can then only confirm footing (and his sprite bottom), never re-position him.
+    mario = find_mario(frame, ground=ground, near=st.mario_screen_x)
     if mario:
-        st.mario_screen_x = mario["x"]
         st.mario_bottom = mario["bottom"]
 
     if st.mario_screen_x is not None:

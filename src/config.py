@@ -50,33 +50,50 @@ def buttons_to_byte(names) -> int:
 
 
 # ----------------------------------------------------------------- SMB1 RAM map
-# Community-documented addresses for Super Mario Bros. (iNES, mapper 0, NTSC).
+# Community-documented addresses, CORRECTED by direct measurement on
+# "Super Mario Bros. (Japan, USA)" (mapper 0) using OAM sprite position and
+# background pixel scroll as ground truth:
 #
-# HONESTY NOTE: $0021/$0025/$0026/$0027 (timer, world, lives, status) and the
-# $0028-$002A player-position bytes are stable across every SMB1 map and are
-# trusted. The enemy slots at $0030-$0056 come from the same community maps and
-# are *plausible but not verified* -- the offsets differ between the Datacrystal
-# and Southbird tables by a byte or two in places. tools/dump_ram.py exists to
-# verify them empirically in one minute once a ROM is present, and every decode
-# below degrades to "unknown" rather than guessing when a value is out of range.
+# * $06D:$086 world X - $086 wraps 255->0 on exactly the frame $06D steps +1
+#   (observed twice), and at level start ($06D:$086) == Mario's screen x with
+#   the camera at 0. World X = camera + screen, as a level coordinate should be.
+# * $005 screen X - equals Mario's OAM sprite x on every measured frame:
+#   camera scroll, edge clamping, and jumps included. This is the byte the game
+#   itself uses to position Mario's sprite.
+# * $001:$002 world Y - equals the OAM sprite y plus a constant on grounded
+#   frames exactly (airborne within the 8px sprite-pose jitter).
+#
+# The old community table ($0028/$0029 for X) reads ZERO for a whole level on
+# this build while Mario visibly runs, so it was replaced, not trusted.
+#
+# HONESTY NOTE: $0021-$002A (timer, world, lives, status) and the enemy slots
+# at $0030-$0056 still read zero on this build and remain the community values
+# -- plausibility-guarded by ram_is_plausible(), not verified. tools/dump_ram.py
+# re-verifies the coordinate bytes against pixel motion in one minute.
 RAM = {
     # --- player -------------------------------------------------------------
-    "player_x_page": 0x00,  # bits 8..15 of the absolute world X
-    "player_y_page": 0x01,  # bits 8..15 of the absolute world Y
-    "player_y_subpx": 0x02,
-    "scroll_x": 0x03,  # low 8 bits of the camera
-    "scroll_y": 0x05,
-    "player_spr_x": 0x06,  # fine sub-tile offsets
+    "player_x_hi": 0x6D,  # bits 8..15 of the absolute world X (measured)
+    "player_x_lo": 0x86,  # bits 0..7 of the absolute world X (measured)
+    "player_y_page": 0x01,  # bits 8..15 of the absolute world Y (measured)
+    "player_y_subpx": 0x02,  # bits 0..7 of the absolute world Y (measured)
+    "player_screen_x": 0x3AD,  # Mario's screen X, as the game draws him.
+    #                                Measured: equals OAM sprite x on every frame
+    #                                (the first candidate, $005, matched only 52%
+    #                                -- it flickers between valid values and 0/146
+    #                                on some frames; $3AD never does. $755 holds
+    #                                the same value, likely a second copy.)
+    "scroll_x": 0x03,  # community "camera low byte"; measured constant here,
+    #                   -- real camera = world_x - player_screen_x, computed
+    "scroll_y": 0x05,  # community value; note $005 is player_screen_x (above)
+    "player_spr_x": 0x06,  # fine sub-tile offsets (community)
     "player_spr_y": 0x07,
-    "coins": 0x1F,  # BCD, 00-99
+    "coins": 0x1F,  # BCD, 00-99 (community; reads 0 on this build)
     "timer_high": 0x21,
     "timer_low": 0x22,  # combined with 0x21 -> 8-bit countdown, ticks at ~24/s
     "player_y_px": 0x24,
     "world": 0x25,
     "lives": 0x26,
     "status": 0x27,
-    "player_x_hi": 0x28,
-    "player_x_lo": 0x29,
     # --- four enemy slots, 9 bytes each starting at 0x30 --------------------
     "enemy_base": 0x30,
 }

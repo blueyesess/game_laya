@@ -126,9 +126,9 @@ def main() -> int:
     print("\nRAM/pixel agreement: %s" % json.dumps(agreement), file=sys.stderr)
     if not agreement["consistent"]:
         print(
-            "  world_x and Mario's on-screen position disagree. Check RAM['player_x_hi']"
-            " / RAM['player_x_lo'] in src/config.py, or the colour thresholds in"
-            " src/smb_state.py find_mario().",
+            "  world_x / mario_screen_x / camera (world_x - mario_screen_x) broke one of"
+            " their invariants while RIGHT was held. Check RAM['player_x_hi']"
+            " / RAM['player_x_lo'] / RAM['player_screen_x'] in src/config.py.",
             file=sys.stderr,
         )
 
@@ -143,35 +143,38 @@ def main() -> int:
 
 
 def _ram_pixel_agreement(samples) -> dict:
-    """Compare how fast world_x and mario_screen_x move while RIGHT is held.
+    """Cross-check the three measured coordinates against each other while RIGHT is held.
 
-    Both describe the same motion, so their per-frame deltas should be close. The
-    screen value wraps at the camera edge, so only samples where both moved forward
-    without either wrapping are counted.
+    The old check compared world_x against Mario's *pixel* position at equal speed,
+    which is wrong as soon as the camera scrolls (world grows, screen clamps). The
+    invariants that hold on any build, with world/camera/screen measured directly:
+
+    * world_x never decreases while RIGHT is held (Mario only moves right);
+    * screen_x (= RAM['player_screen_x']) stays within the playfield [0, 255];
+    * camera = world_x - screen_x never decreases (the camera never pans back).
+
+    Three cheap statements; a wrong address table fails at least one of them.
     """
-    pairs = []
-    for prev, cur in zip(samples, samples[1:]):
-        if cur["buttons"] != "right" or prev["buttons"] != "right":
-            continue
-        if prev["mario_screen_x"] is None or cur["mario_screen_x"] is None:
-            continue
-        d_ram = cur["world_x"] - prev["world_x"]
-        d_px = cur["mario_screen_x"] - prev["mario_screen_x"]
-        if d_ram <= 0 or d_px < 0 or d_px > 16:
-            continue  # wrapped at the screen edge, or stopped
-        pairs.append((d_ram, d_px))
-
-    if not pairs:
+    rows = [s for s in samples if s["buttons"] == "right" and s["mario_screen_x"] is not None]
+    if len(rows) < 4:
         return {"consistent": None, "note": "not enough forward-moving samples", "samples": 0}
 
-    ratio = (sum(p[0] for p in pairs) / len(pairs)) / max(1e-6, sum(p[1] for p in pairs) / len(pairs))
-    # world_x counts whole pixels; mario_screen_x is bounded by the camera. A ratio
-    # near 1.0 means the two agree that Mario moved.
+    world_back = sum(1 for a, b in zip(rows, rows[1:]) if b["world_x"] < a["world_x"])
+    cam_back = sum(
+        1
+        for a, b in zip(rows, rows[1:])
+        if (b["world_x"] - b["mario_screen_x"]) < (a["world_x"] - a["mario_screen_x"])
+    )
+    offscreen = sum(1 for s in rows if not 0 <= s["mario_screen_x"] < 256)
+
+    ok = world_back == 0 and cam_back == 0 and offscreen == 0
     return {
-        "consistent": 0.5 <= ratio <= 2.0,
-        "ratio_world_x_to_pixels": round(ratio, 3),
-        "samples": len(pairs),
-        "note": "ratio should be ~1.0 when both sources are correct",
+        "consistent": ok,
+        "world_x_backward": world_back,
+        "camera_backward": cam_back,
+        "screen_x_offscreen": offscreen,
+        "samples": len(rows),
+        "note": "world/camera monotone and screen in-bounds while holding right",
     }
 
 

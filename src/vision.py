@@ -125,20 +125,34 @@ def ground_profile(frame: np.ndarray, hud_rows: int) -> np.ndarray:
       here shifts every surface down by exactly hud_rows, so a real floor row lands at
       240+ -- which is the sentinel for "hole", so every column reads as a pit while
       still returning plausible numbers.
-    * black is background even outdoors. The letterbox and the sprite outlines use
-      it, and a column of it inside a pit must not read as floor.
+    * black is background only on rows that are black across the *whole* width.
+      Treating every black pixel as background broke on a real dump: the ground's
+      own grout lines are black, so the bottom row read as empty in 192 of 256
+      columns, every one of them became a pit, the median floor row drifted onto
+      whatever was left, and a character standing on solid brick measured ~40px
+      above "the floor" and was rejected as airborne. A stray black column inside
+      a pit now reads as solid -- the rare case, traded for the common one.
     """
     playfield = frame[hud_rows:, :, :].astype(np.int16)
     backdrop = background_colour(frame, hud_rows).astype(np.int16)
     is_bg = np.abs(playfield - backdrop).sum(axis=2) <= BG_TOLERANCE
-    is_bg |= playfield.max(axis=2) <= 8
+    black = playfield.max(axis=2) <= 8
+    is_bg |= black & black.all(axis=1)[:, None]
     solid = ~is_bg
     rows = solid.shape[0]
+
+    # Trailing rows that are entirely black are overscan, not floor: stop the
+    # profile there, so a real floor above a letterbox bar stays a floor instead
+    # of every column reading as a hole.
+    while rows > 0 and black[rows - 1].all():
+        rows -= 1
+    if rows == 0:
+        return np.full(playfield.shape[1], SCREEN_H, dtype=np.int32)
 
     # Row of the last non-solid pixel in each column, or -1 when the column is solid
     # from the very top. One below that is the top of the lowest run -- where feet
     # land. A column with no solid pixel at all is a hole.
-    gaps = np.where(solid, -1, np.arange(rows, dtype=np.int32)[:, None])
+    gaps = np.where(solid[:rows], -1, np.arange(rows, dtype=np.int32)[:, None])
     last_gap = gaps.max(axis=0)
     return np.where(last_gap == rows - 1, SCREEN_H, last_gap + 1 + hud_rows).astype(np.int32)
 
@@ -388,8 +402,11 @@ def find_character(
 
     h = SCREEN_H - profile.hud_rows
     window = (SCREEN_W // 3, 2 * SCREEN_W // 3)
-    # A blob half off the right edge is a fresh spawn, not the player.
-    max_width = 64
+    # A sprite is 16px wide (32 when big), so anything past 40 cannot be one
+    # character. The old 64px cap passed a hill merged with a Goomba -- 63px,
+    # one pixel of slack -- and the merged blob then outranked the real player.
+    # A blob half off the right edge is a fresh spawn, not the player, anyway.
+    max_width = 40
 
     def height(blob: Blob) -> int:
         return blob.y1 - blob.y0
@@ -404,20 +421,22 @@ def find_character(
         return int(vis.surface[int(np.clip(blob.x, 0, SCREEN_W - 1))])
 
     standing: List[Blob] = []
+    sized: List[Blob] = []  # character-sized, whatever its footing
     for blob in blobs:
         local = surface(blob)
+        if height(blob) > profile.sprite_h * 3:
+            continue  # a wall, not a character
+        if blob.pixels > 2048 or (blob.x1 - blob.x0) > max_width:
+            continue  # terrain or a scrolling band, not a character
+        sized.append(blob)
         if local >= SCREEN_H:
             continue  # over a pit: nothing to stand on
         # Within one sprite height of its own surface = standing on it.
         if local - blob.y1 > profile.sprite_h:
             continue
-        if height(blob) > profile.sprite_h * 3:
-            continue  # a wall, not a character
-        if blob.pixels > 2048 or (blob.x1 - blob.x0) > max_width:
-            continue  # terrain or a scrolling band, not a character
         standing.append(blob)
 
-    if not standing:
+    if not standing and not sized:
         return None
 
     def box(blob: Blob) -> dict:
@@ -432,13 +451,16 @@ def find_character(
 
     # A remembered box is a far better prior than geometry: it survives a
     # Goomba running past on the left, which is exactly where the previous
-    # "leftmost blob" heuristic went wrong.
+    # "leftmost blob on the floor" heuristic went wrong. Match against every
+    # character-sized blob, not just the standing ones -- a jump lasts several
+    # frames, and dropping the hint the instant the player leaves the floor is
+    # how the tracker handed the role to whatever enemy was still grounded.
     if hint is not None:
         hx0, hx1, hy0, hy1 = hint
         hcx = (hx0 + hx1) / 2
         hcy = (hy0 + hy1) / 2
         hheight = hy1 - hy0
-        for blob in standing:
+        for blob in sized:
             cx = blob.x
             cy = (blob.y0 + blob.y1) / 2
             if abs(cx - hcx) > 28:
@@ -449,7 +471,10 @@ def find_character(
                 continue
             return box(blob)
 
-    if len(standing) > 1:
+    pool = standing or sized
+    if not pool:
+        return None
+    if len(pool) > 1:
         # The middle third of the screen is where the camera keeps the player.
         def middle_score(blob: Blob) -> float:
             distance = min(
@@ -459,12 +484,12 @@ def find_character(
             )
             return (distance, abs(height(blob) - profile.sprite_h), blob.x0)
 
-        best = min(standing, key=middle_score)
+        best = min(pool, key=middle_score)
         return box(best)
 
     # Only one candidate: the level-opening case. It is usually the player,
     # but say so rather than pretend.
-    only = standing[0]
+    only = pool[0]
     result = box(only)
     result["uncertain"] = True
     return result

@@ -1,7 +1,7 @@
 {
   "id": "smb1",
   "name": "Super Mario Bros. (iNES, mapper 0, NTSC)",
-  "description": "SMB1 tuning on top of the generic vision layer. The RAM map below is community-documented; only the fields listed in `invariants` are trusted, and everything else degrades to 'unknown' rather than guessing.",
+  "description": "SMB1 tuning on top of the generic vision layer. The player position is read from the OAM sprite table at $0200, which was measured on the Virtual Console build and is trusted on its own. The HUD addresses below are community-documented and read as zeros on that build, so only the fields listed in `invariants` are trusted and everything else degrades to 'unknown' rather than guessing.",
   "hud_rows": 32,
   "sprite_h": 16,
   "max_fall_px": 40,
@@ -21,6 +21,10 @@
   },
   "jump_hold_frames": 7,
   "ram": {
+    "oam_base": 512,
+    "player_tiles": [48, 79],
+    "oam_hidden": 240,
+    "world_x_lo": 5,
     "player_x_page": 0,
     "player_y_page": 1,
     "player_y_subpx": 2,

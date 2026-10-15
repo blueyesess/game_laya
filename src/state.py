@@ -51,7 +51,18 @@ class ProfileNotFound(LookupError):
 # ------------------------------------------------------------------- profile
 @dataclass
 class RamMap:
-    """Optional per-game RAM layout, read only when its invariants hold."""
+    """Optional per-game RAM layout, read only when its invariants hold.
+
+    Two independent blocks, deliberately not gated together:
+
+    * `addresses` + `invariants` describe the HUD numbers. They come from a
+      community table and are often wrong for a given dump, so they are only
+      trusted when the decoded values satisfy the game's own invariants.
+    * `oam` describes the sprite table at $0200, which every NES game fills
+      with the *actual screen position* of everything drawn. That is measured,
+      not documented, so it is trusted on its own -- it is what rescues
+      position tracking when the HUD map is wrong.
+    """
 
     addresses: dict
     enemy_stride: int = 0
@@ -61,6 +72,17 @@ class RamMap:
     # Status byte values that mean "this run is over" (dead / level clear / game
     # over). Per-game by definition, so a profile declares them or omits them.
     terminated_statuses: tuple = ()
+    # OAM shadow block: base address, the tile-number ranges that belong to the
+    # player sprite, and the row offset for "hidden" entries. Present only when
+    # this has been measured on the actual dump.
+    oam_base: Optional[int] = None
+    player_tiles: tuple = ()
+    oam_hidden: int = 0xF0
+    # The measured world-position low byte, when one exists. On the SMB1 VC
+    # build it is the only byte that rises while the camera is locked (screen
+    # X frozen at 151), falls when the player walks left, and stays put while
+    # idle -- so it is world X, not screen X and not a camera register.
+    world_x_lo: Optional[int] = None
 
     @property
     def enemy_base(self) -> Optional[int]:
@@ -142,6 +164,10 @@ class GameProfile:
                     for k, v in (data.get("invariants") or {}).items()
                 },
                 terminated_statuses=tuple(int(v) for v in (ram.get("terminated_statuses") or ())),
+                oam_base=int(ram["oam_base"]) if isinstance(ram.get("oam_base"), int) else None,
+                player_tiles=tuple(ram.get("player_tiles") or ()),
+                oam_hidden=int(ram.get("oam_hidden", 0xF0)),
+                world_x_lo=int(ram["world_x_lo"]) if isinstance(ram.get("world_x_lo"), int) else None,
             )
         return cls(
             id=data["id"],
@@ -203,6 +229,10 @@ class GameState:
     hud: dict = field(default_factory=dict)
     world_x: Optional[int] = None
     enemies: List[dict] = field(default_factory=list)
+    # Where character_x/character_y came from: "ram" (the OAM sprite table) or
+    # "pixels" (the geometric detector). RAM wins whenever the profile measured
+    # a sprite table, because the pixel tracker can latch onto the wrong blob.
+    position_source: str = "pixels"
     # --- derived -----------------------------------------------------------
     terminated: bool = False
 
@@ -314,6 +344,21 @@ class Decoder:
         else:
             self._hint = None
 
+        # --- optional RAM -------------------------------------------------
+        # Position comes first: the OAM sprite table is authoritative, and the
+        # hazard/ground checks below are computed from character_x, so they must
+        # see the RAM position when there is one.
+        if profile.ram is not None and ram is not None:
+            self._decode_position(profile.ram, ram, st)
+            if st.position_source == "ram":
+                # Keep the pixel box for the overlay; the authoritative
+                # position is the sprite table, so re-anchor the tracker.
+                self._hint = (
+                    st.character_x - 8, st.character_x + 8,
+                    st.character_y, st.character_bottom,
+                )
+            self._decode_ram(profile.ram, ram, st)
+
         if st.character_x is not None and st.character_bottom is not None:
             col = int(np.clip(st.character_x, 0, SCREEN_W - 1))
             surface = int(vis.ground[col])
@@ -344,13 +389,78 @@ class Decoder:
                 Blob(x=blob.x, top=blob.y0, height=blob.y1 - blob.y0)
             )
 
-        # --- optional RAM -------------------------------------------------
-        if profile.ram is not None and ram is not None:
-            self._decode_ram(profile.ram, ram, st)
         # `terminated` only comes from a status byte the profile actually mapped;
         # with no RAM map we simply never declare the run over.
         st.terminated = st.hud.get("terminated", False)
         return st
+
+    @staticmethod
+    def _decode_position(ram_map: RamMap, ram: np.ndarray, st: GameState) -> None:
+        """Read the player's screen position from the OAM sprite table.
+
+        Every NES game writes the *actual screen coordinates* of everything it
+        draws into the 256-byte OAM page ($0200 by convention). Unlike a
+        documented address table, this cannot be wrong about a given dump: it
+        is the very bytes the PPU renders from. On the SMB1 Virtual Console
+        build the HUD addresses read all zeros while the game is plainly
+        running, but the sprite table kept tracking the player across camera
+        scrolls, jumps and deaths.
+
+        The player's sprites are picked by tile number (a small measured range)
+        and grouped by shared X, since one 16x16 character is drawn as several
+        8x8 entries a few pixels apart. The largest such cluster is taken.
+        """
+        if ram_map.oam_base is None or not ram_map.player_tiles:
+            return
+        base = ram_map.oam_base
+        lo, hi = min(ram_map.player_tiles), max(ram_map.player_tiles)
+        entries = []
+        for slot in range(64):
+            at = base + slot * 4
+            if at + 3 >= len(ram):
+                break
+            y = int(ram[at])
+            tile = int(ram[at + 1])
+            x = int(ram[at + 3])
+            if y >= ram_map.oam_hidden or not (lo <= tile <= hi):
+                continue
+            entries.append((x, y, tile))
+        if not entries:
+            return  # no player sprite on screen this frame
+
+        # Group by shared X: a character's tiles are drawn a few pixels apart,
+        # so the largest cluster of entries within 8px of each other is one
+        # object. Ties go to the group closest to the screen centre, where the
+        # camera keeps the player.
+        xs = sorted({e[0] for e in entries})
+        best, best_n = None, 0
+        for anchor in xs:
+            group = [e for e in entries if abs(e[0] - anchor) <= 8]
+            if len(group) > best_n:
+                best, best_n = group, len(group)
+        if not best:
+            return
+
+        x0 = min(e[0] for e in best)
+        y0 = min(e[1] for e in best)
+        st.character_visible = True
+        st.character_uncertain = False
+        st.character_x = x0 + 8          # sprite centre, matching the pixel box
+        st.character_y = y0 + 1          # OAM Y is one row above the top pixel
+        st.character_bottom = y0 + 1 + 16
+        st.character_box = {
+            "x_min": x0,
+            "x_max": x0 + 15,
+            "y_min": st.character_y,
+            "bottom": st.character_bottom,
+        }
+        st.position_source = "ram"
+
+        world = _u8(ram, ram_map.world_x_lo) if ram_map.world_x_lo is not None else None
+        if world is not None:
+            # Low byte only: the page byte was not pinned down on this build,
+            # so report the in-page position rather than invent a 16-bit one.
+            st.world_x = world
 
     @staticmethod
     def _decode_ram(ram_map: RamMap, ram: np.ndarray, st: GameState) -> None:
